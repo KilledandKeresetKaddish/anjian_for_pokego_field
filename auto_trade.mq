@@ -12,8 +12,10 @@
 //
 // ===== 防误点设计 =====
 // 1. 长条按钮（NEXT / CONFIRM / 橙色 CANCEL）要求“横向延伸 + 纵向延伸”双重验证：
-//    找到第一个色点后，再验证它右侧 36~170px 和下方 45~90px 仍是同色。
+//    找到候选色点后，再验证它右侧 36~170px 和下方 45~90px 仍是同色。
 //    文字、细图标只有横向或零散匹配，过不了纵向验证，不会被当成按钮。
+//    候选点验证失败不放弃：从该点下方继续搜索区域余下部分，
+//    所以按钮上方出现同色杂点（贴图、特效、文字）也挡不住真按钮。
 // 2. CONFIRM/CANCEL 还要求色点在屏幕左侧 25% 内（按钮贴屏幕左边），
 //    这样交易页中间的金色“+XX 星尘/km”文字、右下宝可梦卡片都不会误判。
 // 3. 完成页 X 只在交易确认页消失（橙色 CANCEL 不见了 = 双方都确认、动画开始）之后才开始找，
@@ -163,73 +165,100 @@ Function FindSpecIn(x1, y1, x2, y2, spec)
     End If
 End Function
 
-// 找“长条按钮”：第一个色点 + 右侧横向延伸验证 + 下方纵向延伸验证。
+// 找“长条按钮”：候选色点 + 右侧横向延伸验证 + 下方纵向延伸验证。
+// FindColor（方向 0）只返回区域里最上面的第一个匹配点，所以候选点验证失败时不能直接放弃：
+// 把搜索区域上沿挪到该候选点下方再找，孤立杂点/文字行就挡不住更靠下的真按钮。
 // 通过后 PillFoundX/Y 是按钮上沿色点，PillTapX/Y 是建议点击点（按钮内部）。
 Function FindPillIn(x1, y1, x2, y2, spec)
+    Dim curY1, guard, candX, candY, tapX, okH, okV
     Dim hx1, hx2, hy2, vx1, vx2, vy1, vy2
     FindPillIn = False
     PillFoundX = -1
     PillFoundY = -1
-    If FindSpecIn(x1, y1, x2, y2, spec) = False Then
-        Exit Function
-    End If
-    PillFoundX = FoundX
-    PillFoundY = FoundY
-    // 横向验证：右侧 36~170px 仍是同色（按钮是横向长条；文字笔画过不了这关的概率高）
-    hx1 = PillFoundX + 36
-    hx2 = PillFoundX + 170
-    hy2 = PillFoundY + 14
-    If hx2 > x2 Then
-        hx2 = x2
-    End If
-    If hx1 >= hx2 Then
-        Exit Function
-    End If
-    If FindSpecIn(hx1, PillFoundY, hx2, hy2, spec) = False Then
-        Exit Function
-    End If
-    PillTapX = FoundX
-    // 纵向验证：下方 45~90px 仍是同色（按钮有 ~120px 高；文字行没有这个纵向厚度）
-    vx1 = PillFoundX - 10
-    vx2 = PillFoundX + 80
-    vy1 = PillFoundY + 45
-    vy2 = PillFoundY + 90
-    If FindSpecIn(vx1, vy1, vx2, vy2, spec) = False Then
-        Exit Function
-    End If
-    PillTapY = PillFoundY + 30
-    FindPillIn = True
+    curY1 = y1
+    guard = 0
+    Do
+        guard = guard + 1
+        If FindSpecIn(x1, curY1, x2, y2, spec) = False Then
+            Exit Function
+        End If
+        candX = FoundX
+        candY = FoundY
+        okH = False
+        okV = False
+        tapX = -1
+        // 横向验证：右侧 36~170px 仍是同色（按钮是横向长条；文字笔画过不了这关的概率高）
+        hx1 = candX + 36
+        hx2 = candX + 170
+        hy2 = candY + 14
+        If hx2 > x2 Then
+            hx2 = x2
+        End If
+        If hx1 < hx2 Then
+            If FindSpecIn(hx1, candY, hx2, hy2, spec) Then
+                okH = True
+                tapX = FoundX
+            End If
+        End If
+        // 纵向验证：下方 45~90px 仍是同色（按钮有 ~120px 高；文字行没有这个纵向厚度）
+        If okH Then
+            vx1 = candX - 10
+            vx2 = candX + 80
+            vy1 = candY + 45
+            vy2 = candY + 90
+            If FindSpecIn(vx1, vy1, vx2, vy2, spec) Then
+                okV = True
+            End If
+        End If
+        If okH And okV Then
+            PillFoundX = candX
+            PillFoundY = candY
+            PillTapX = tapX
+            PillTapY = candY + 30
+            FindPillIn = True
+            Exit Function
+        End If
+        // 候选点不是按钮：跳过它所在的行，从下方继续找
+        curY1 = candY + 12
+    Loop While guard < 40 And curY1 < y2
 End Function
 
-// 找完成页底部浅青色 X 圆钮：第一个色点 + 下方 40~100px 仍有同色（圆环下半部/X 笔画）。
+// 找完成页底部浅青色 X 圆钮：候选色点 + 下方 40~100px 仍有同色（圆环下半部/X 笔画）。
+// 与 FindPillIn 同理：候选点验证失败就从它下方继续找，杂点不挡真按钮。
 Function FindCloseIn(x1, y1, x2, y2)
-    Dim topX, topY, ok
+    Dim curY1, guard, topX, topY, ok
     FindCloseIn = False
-    ok = False
-    If FindSpecIn(x1, y1, x2, y2, CloseSpecA) Then
-        ok = True
-    ElseIf FindSpecIn(x1, y1, x2, y2, CloseSpecB) Then
-        ok = True
-    End If
-    If ok = False Then
-        Exit Function
-    End If
-    topX = FoundX
-    topY = FoundY
-    ok = False
-    If FindSpecIn(topX - 15, topY + 40, topX + 85, topY + 100, CloseSpecA) Then
-        ok = True
-    ElseIf FindSpecIn(topX - 15, topY + 40, topX + 85, topY + 100, CloseSpecB) Then
-        ok = True
-    End If
-    If ok = False Then
-        Exit Function
-    End If
-    CloseFoundX = topX
-    CloseFoundY = topY
-    CloseTapX = topX + 35
-    CloseTapY = topY + 45
-    FindCloseIn = True
+    curY1 = y1
+    guard = 0
+    Do
+        guard = guard + 1
+        ok = False
+        If FindSpecIn(x1, curY1, x2, y2, CloseSpecA) Then
+            ok = True
+        ElseIf FindSpecIn(x1, curY1, x2, y2, CloseSpecB) Then
+            ok = True
+        End If
+        If ok = False Then
+            Exit Function
+        End If
+        topX = FoundX
+        topY = FoundY
+        ok = False
+        If FindSpecIn(topX - 15, topY + 40, topX + 85, topY + 100, CloseSpecA) Then
+            ok = True
+        ElseIf FindSpecIn(topX - 15, topY + 40, topX + 85, topY + 100, CloseSpecB) Then
+            ok = True
+        End If
+        If ok Then
+            CloseFoundX = topX
+            CloseFoundY = topY
+            CloseTapX = topX + 35
+            CloseTapY = topY + 45
+            FindCloseIn = True
+            Exit Function
+        End If
+        curY1 = topY + 12
+    Loop While guard < 40 And curY1 < y2
 End Function
 
 // ===================== 状态判断 =====================
