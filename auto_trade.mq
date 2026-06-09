@@ -14,8 +14,8 @@ ScreenW = GetScreenX()
 ScreenH = GetScreenY()
 
 MaxTrades = 20              // 最多循环交易次数；改成 0 表示无限循环（不建议第一次使用）
-WaitPartnerMaxSec = 180     // 点 CONFIRM 后等待对方确认/交易动画的最长秒数
-WaitCompleteMaxSec = 180    // 等待交易结束回到宝可梦详情页的最长秒数
+WaitPartnerMaxSec = 180     // 点 CONFIRM 后等待对方确认/交易开始的最长秒数
+WaitCompleteMaxSec = 180    // 对方确认后，额外等待交易动画结束并回到宝可梦详情页的最长秒数
 StepDelayMs = 1200
 TradeCount = 0
 
@@ -89,8 +89,10 @@ Sub OneTrade()
     TapConfirm()
 
     // 第一性原则：此处不要盲目狂点。对方未确认时按钮会变成 CANCEL，继续点会取消交易。
-    // 因此只等待交易动画/结算自然结束，再点详情页 X 回到流程。
-    WaitSeconds WaitPartnerMaxSec, "partner confirm and trade animation"
+    // 先给对方确认留出等待时间，再单独等待交易动画/结算进入详情页。
+    // 这样 WaitCompleteMaxSec 才真正控制“详情页 X 出现前”的等待，避免过早点 X。
+    WaitSeconds WaitPartnerMaxSec, "partner confirm"
+    WaitSeconds WaitCompleteMaxSec, "trade animation and completion detail"
 
     TapClosePokemonDetail()
     WaitSeconds 5, "return to friend/trade page"
