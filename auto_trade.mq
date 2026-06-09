@@ -1,0 +1,114 @@
+// Pokemon GO 自动交易脚本（按键精灵手机助手）
+// 设备基准：iPhone 13 Pro / iOS 16.3，竖屏，抓抓坐标窗口显示 UI 坐标约 960x2079。
+// 使用方式：从好友资料页开始运行（能看到 LOCAL TRADE / REMOTE TRADE / VIEW TRADE POKÉMON 的页面）。
+// 安全建议：先把 MaxTrades 设成 1-3 次试跑，确认坐标无误后再增加次数。
+
+Dim BaseW, BaseH
+Dim ScreenW, ScreenH
+Dim MaxTrades, TradeCount
+Dim WaitPartnerMaxSec, WaitCompleteMaxSec, StepDelayMs
+
+BaseW = 960
+BaseH = 2079
+ScreenW = GetScreenX()
+ScreenH = GetScreenY()
+
+MaxTrades = 20              // 最多循环交易次数；改成 0 表示无限循环（不建议第一次使用）
+WaitPartnerMaxSec = 180     // 点 CONFIRM 后等待对方确认/交易开始的最长秒数
+WaitCompleteMaxSec = 180    // 对方确认后，额外等待交易动画结束并回到宝可梦详情页的最长秒数
+StepDelayMs = 1200
+TradeCount = 0
+
+// ===== 坐标缩放：把截图中 960x2079 的坐标换算到当前设备 =====
+Function SX(x)
+    SX = x * ScreenW / BaseW
+End Function
+
+Function SY(y)
+    SY = y * ScreenH / BaseH
+End Function
+
+Sub SafeTap(x, y, note)
+    TracePrint "Tap " & note & " @ " & SX(x) & "," & SY(y)
+    Tap SX(x), SY(y)
+    Delay StepDelayMs
+End Sub
+
+Sub TapTradeEntry()
+    // 好友资料页：LOCAL TRADE 图标中心（截图第 1 张，约 x=386,y=1555）
+    // 如果你要远程交易，把这一行改成 SafeTap 594,1555,"REMOTE TRADE"。
+    SafeTap 386, 1555, "LOCAL TRADE"
+End Sub
+
+Sub TapFirstPokemon()
+    // 宝可梦列表页：默认选择左上第一只（截图第 2 张，左上格中心约 x=210,y=645）
+    SafeTap 210, 645, "FIRST POKEMON"
+End Sub
+
+Sub TapNext()
+    // 宝可梦详情/交易选择页：NEXT 按钮中心（截图第 3 张，约 x=490,y=1790）
+    SafeTap 490, 1790, "NEXT"
+End Sub
+
+Sub TapConfirm()
+    // 交易确认页：CONFIRM/CANCEL 同一按钮区域（截图第 4/5 张，约 x=150,y=1145）
+    SafeTap 150, 1145, "CONFIRM"
+End Sub
+
+Sub TapClosePokemonDetail()
+    // 交易完成后通常进入被交易来的宝可梦详情页：底部 X（截图第 6 张，约 x=505,y=1990）
+    SafeTap 505, 1990, "DETAIL CLOSE X"
+End Sub
+
+Sub TapBackIfNeeded()
+    // 如果停在交易房/好友页异常位置，可用左上返回；默认只在异常恢复时调用。
+    SafeTap 115, 245, "BACK"
+End Sub
+
+Function WaitSeconds(sec, reason)
+    Dim i
+    For i = 1 To sec
+        TracePrint "Wait " & reason & " " & i & "/" & sec & " sec"
+        Delay 1000
+    Next
+    WaitSeconds = True
+End Function
+
+Sub OneTrade()
+    TracePrint "===== Trade round " & (TradeCount + 1) & " start ====="
+
+    TapTradeEntry()
+    WaitSeconds 4, "pokemon list"
+
+    TapFirstPokemon()
+    WaitSeconds 3, "pokemon detail"
+
+    TapNext()
+    WaitSeconds 5, "trade confirm page"
+
+    TapConfirm()
+
+    // 第一性原则：此处不要盲目狂点。对方未确认时按钮会变成 CANCEL，继续点会取消交易。
+    // 先给对方确认留出等待时间，再单独等待交易动画/结算进入详情页。
+    // 这样 WaitCompleteMaxSec 才真正控制“详情页 X 出现前”的等待，避免过早点 X。
+    WaitSeconds WaitPartnerMaxSec, "partner confirm"
+    WaitSeconds WaitCompleteMaxSec, "trade animation and completion detail"
+
+    TapClosePokemonDetail()
+    WaitSeconds 5, "return to friend/trade page"
+
+    TradeCount = TradeCount + 1
+    TracePrint "===== Trade round " & TradeCount & " done ====="
+End Sub
+
+TracePrint "Auto trade start. Screen=" & ScreenW & "x" & ScreenH & ", Base=" & BaseW & "x" & BaseH
+
+Do
+    OneTrade()
+    If MaxTrades > 0 Then
+        If TradeCount >= MaxTrades Then
+            TracePrint "Reached MaxTrades=" & MaxTrades & ", script stopped."
+            Exit Do
+        End If
+    End If
+Loop
