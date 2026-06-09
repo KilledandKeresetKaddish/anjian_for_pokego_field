@@ -19,12 +19,12 @@ ScreenH = GetScreenY()
 
 MaxTrades = 20                 // 最多循环交易次数；改成 0 表示无限循环（不建议第一次使用）
 WaitPokemonListSec = 12         // 点击交易入口后等待宝可梦列表加载的秒数
-WaitPokemonDetailSec = 12       // 选择宝可梦后等待详情/NEXT 页加载的秒数
+WaitPokemonDetailSec = 120      // 选择宝可梦后等待 NEXT 按钮出现的最长秒数，不再固定硬等
 WaitTradePageSec = 15           // 点击 NEXT 后等待交易确认页加载的秒数
-WaitPartnerMaxSec = 240         // 点 CONFIRM 后等待对方确认/交易开始的最长秒数
-WaitCompleteMaxSec = 240        // 对方确认后，额外等待交易动画结束并回到宝可梦详情页的最长秒数
+WaitPartnerMaxSec = 180         // 点 CONFIRM 后，等待交易完成页 X 出现的最长秒数；这是检测上限，不是固定睡眠
+WaitCompleteMaxSec = 60         // X 出现后点击失败/页面慢时的补充检测秒数；通常不会用满
 WaitReturnSec = 12              // 点交易完成详情页 X 后等待回到好友/交易入口页的秒数
-NextRetryMaxSec = 90            // 进入宝可梦详情页后，最长持续尝试点击 NEXT 的秒数
+NextRetryMaxSec = 90            // NEXT 按钮出现但页面切换失败时，最长持续重试点击 NEXT 的秒数
 NextRetryIntervalSec = 5        // NEXT 没进入下一页时，每隔几秒再尝试一次
 StepDelayMs = 1500
 ScanStep = 8                    // 颜色扫描步长；越小越准但越慢
@@ -149,11 +149,14 @@ Function FindColorInRegion(x1, y1, x2, y2, colorKind)
     For y = y1 To y2 Step ScanStep
         For x = x1 To x2 Step ScanStep
             If colorKind = "green" Then
-                If IsGoGreen(x, y) Then
-                    LastFoundX = x
-                    LastFoundY = y
-                    FindColorInRegion = True
-                    Exit Function
+                // NEXT/CONFIRM 都是横向长按钮。要求同一水平线上连续出现绿色，避免把宝可梦身体/招式图标当按钮。
+                If x + ScanStep * 8 <= x2 Then
+                    If IsGoGreen(x, y) And IsGoGreen(x + ScanStep * 4, y) And IsGoGreen(x + ScanStep * 8, y) Then
+                        LastFoundX = x + ScanStep * 4
+                        LastFoundY = y
+                        FindColorInRegion = True
+                        Exit Function
+                    End If
                 End If
             ElseIf colorKind = "orange" Then
                 If IsGoOrange(x, y) Then
@@ -251,9 +254,10 @@ Sub TapFirstPokemon()
     SafeTap 210, 645, "FIRST POKEMON"
 End Sub
 
-Function TapNextWhenVisible()
-    // NEXT 是底部中间绿色按钮：只在屏幕下半部中间区域找绿色，避免误点其它对象。
-    TapNextWhenVisible = WaitAndTapColorButton(ScreenW * 20 / 100, ScreenH * 62 / 100, ScreenW * 80 / 100, ScreenH * 90 / 100, "green", NextRetryIntervalSec, "NEXT")
+Function TapNextWhenVisible(maxSec)
+    // NEXT 是底部中间绿色长按钮。扫描范围覆盖按钮可能出现的中下部，
+    // 但绿色匹配要求横向连续色块，所以不会因为单个绿色宝可梦像素就误点。
+    TapNextWhenVisible = WaitAndTapColorButton(ScreenW * 8 / 100, ScreenH * 55 / 100, ScreenW * 92 / 100, ScreenH * 88 / 100, "green", maxSec, "NEXT")
 End Function
 
 Function TapConfirmWhenVisible()
@@ -261,38 +265,59 @@ Function TapConfirmWhenVisible()
     TapConfirmWhenVisible = WaitAndTapColorButton(0, ScreenH * 38 / 100, ScreenW * 45 / 100, ScreenH * 62 / 100, "green", WaitTradePageSec, "CONFIRM")
 End Function
 
-Function TapCloseWhenVisible()
+Function TapCloseWhenVisible(maxSec)
     // 交易完成详情页底部 X：只在底部中间区域找浅青圆形，不再盲点固定坐标。
-    TapCloseWhenVisible = WaitAndTapColorButton(ScreenW * 35 / 100, ScreenH * 80 / 100, ScreenW * 65 / 100, ScreenH * 96 / 100, "close", WaitCompleteMaxSec, "DETAIL CLOSE X")
+    // maxSec 是检测上限；一旦 X 出现会立刻点击，不会固定等满。
+    TapCloseWhenVisible = WaitAndTapColorButton(ScreenW * 35 / 100, ScreenH * 78 / 100, ScreenW * 65 / 100, ScreenH * 96 / 100, "close", maxSec, "DETAIL CLOSE X")
+End Function
+
+Function IsTradePageVisible()
+    // 交易确认页有两类稳定状态：左侧绿色 CONFIRM，或对方已确认后的右侧橙色 CONFIRMED。
+    If WaitForColor(0, ScreenH * 35 / 100, ScreenW, ScreenH * 65 / 100, "orange", 1, "trade page confirmed marker") Then
+        IsTradePageVisible = True
+        Exit Function
+    End If
+    If WaitForColor(0, ScreenH * 38 / 100, ScreenW * 45 / 100, ScreenH * 62 / 100, "green", 1, "trade page confirm button") Then
+        IsTradePageVisible = True
+        Exit Function
+    End If
+    IsTradePageVisible = False
 End Function
 
 Function TapNextWithRetry()
-    Dim elapsed, nextWasVisible
-    elapsed = 0
+    Dim waitNextElapsed, retryElapsed
+    waitNextElapsed = 0
+    retryElapsed = 0
 
+    // 第一阶段：不再硬等 pokemon detail。选完宝可梦后马上开始扫描 NEXT，看到就立刻点。
     Do
-        nextWasVisible = TapNextWhenVisible()
-        If nextWasVisible Then
-            // NEXT 点中后，确认页左侧绿色 CONFIRM 或右侧橙色 CONFIRMED 会出现；检测到任一即可停止重试 NEXT。
-            If WaitForColor(0, ScreenH * 35 / 100, ScreenW, ScreenH * 65 / 100, "orange", WaitTradePageSec, "trade page confirmed marker") Then
-                TapNextWithRetry = True
-                Exit Function
-            End If
-            If WaitForColor(0, ScreenH * 38 / 100, ScreenW * 45 / 100, ScreenH * 62 / 100, "green", 3, "trade page confirm button") Then
-                TapNextWithRetry = True
-                Exit Function
-            End If
+        If TapNextWhenVisible(NextRetryIntervalSec) Then
+            Exit Do
+        End If
+        waitNextElapsed = waitNextElapsed + NextRetryIntervalSec
+        TracePrint "Wait NEXT visible elapsed=" & waitNextElapsed & "/" & WaitPokemonDetailSec
+    Loop While waitNextElapsed < WaitPokemonDetailSec
 
-            // 只有在已经点到 NEXT 后，才把确认页验证等待计入已等待时间。
-            elapsed = elapsed + NextRetryIntervalSec + WaitTradePageSec + 3
-        Else
-            // NEXT 还没出现时，实际只等待了 TapNextWhenVisible 内部的 NextRetryIntervalSec。
-            // 不要把 WaitTradePageSec 也加进去，否则配置的 90 秒会在约 25 秒真实等待后提前过期。
-            elapsed = elapsed + NextRetryIntervalSec
+    If waitNextElapsed >= WaitPokemonDetailSec Then
+        TapNextWithRetry = False
+        Exit Function
+    End If
+
+    // 第二阶段：已经点过 NEXT，等待/验证是否进入交易页；没进就继续找 NEXT 并重点。
+    Do
+        If IsTradePageVisible() Then
+            TapNextWithRetry = True
+            Exit Function
         End If
 
-        TracePrint "Retry NEXT elapsed=" & elapsed & "/" & NextRetryMaxSec
-    Loop While elapsed < NextRetryMaxSec
+        If TapNextWhenVisible(NextRetryIntervalSec) Then
+            retryElapsed = retryElapsed + NextRetryIntervalSec
+        Else
+            retryElapsed = retryElapsed + NextRetryIntervalSec
+        End If
+
+        TracePrint "Retry NEXT after visible elapsed=" & retryElapsed & "/" & NextRetryMaxSec
+    Loop While retryElapsed < NextRetryMaxSec
 
     TapNextWithRetry = False
 End Function
@@ -304,7 +329,6 @@ Sub OneTrade()
     WaitSeconds WaitPokemonListSec, "pokemon list"
 
     TapFirstPokemon()
-    WaitSeconds WaitPokemonDetailSec, "pokemon detail"
 
     If TapNextWithRetry() = False Then
         TracePrint "NEXT failed: stop this round to avoid tapping the wrong screen."
@@ -316,12 +340,14 @@ Sub OneTrade()
         ExitScript
     End If
 
-    // 对方未确认时同一区域会变 CANCEL，所以确认只点一次；之后只等待颜色/完成页。
-    WaitSeconds WaitPartnerMaxSec, "partner confirm / trade start"
-
-    If TapCloseWhenVisible() = False Then
-        TracePrint "Detail close X not visible after completion wait; stop to avoid wrong-state loop."
-        ExitScript
+    // 对方未确认时同一区域会变 CANCEL，所以确认只点一次；之后进入“检测完成页 X”的状态。
+    // 这里绝不能固定睡 WaitPartnerMaxSec：对方很快确认时，完成页 X 出现就必须马上点，避免交易页空等到失效。
+    If TapCloseWhenVisible(WaitPartnerMaxSec) = False Then
+        TracePrint "Completion X not visible within partner/completion detection window; try short extra detection."
+        If TapCloseWhenVisible(WaitCompleteMaxSec) = False Then
+            TracePrint "Detail close X not visible after extra completion detection; stop to avoid wrong-state loop."
+            ExitScript
+        End If
     End If
 
     WaitSeconds WaitReturnSec, "return to friend/trade page"
