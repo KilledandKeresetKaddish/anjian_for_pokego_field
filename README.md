@@ -36,7 +36,7 @@
 - `WaitPartnerMaxSec`：点 CONFIRM 后等对方确认/交易开始。
 - `WaitCompleteMaxSec`：等待交易动画结束、底部 X 出现。
 - `WaitReturnSec`：点 X 后等回到好友/交易页。
-- `NextRetryMaxSec` / `NextRetryIntervalSec`：控制 NEXT 的重试总时长和间隔。
+- `NextRetryMaxSec` / `NextRetryIntervalSec`：控制 NEXT 的重试总时长和间隔。只有在真的点到 NEXT 后，脚本才会把确认页验证等待计入重试时间；如果 NEXT 还没出现，只累计实际等待 NEXT 的时间。
 
 ## 后续更稳的方向
 

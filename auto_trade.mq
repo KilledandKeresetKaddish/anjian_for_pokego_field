@@ -267,11 +267,12 @@ Function TapCloseWhenVisible()
 End Function
 
 Function TapNextWithRetry()
-    Dim elapsed
+    Dim elapsed, nextWasVisible
     elapsed = 0
 
     Do
-        If TapNextWhenVisible() Then
+        nextWasVisible = TapNextWhenVisible()
+        If nextWasVisible Then
             // NEXT 点中后，确认页左侧绿色 CONFIRM 或右侧橙色 CONFIRMED 会出现；检测到任一即可停止重试 NEXT。
             If WaitForColor(0, ScreenH * 35 / 100, ScreenW, ScreenH * 65 / 100, "orange", WaitTradePageSec, "trade page confirmed marker") Then
                 TapNextWithRetry = True
@@ -281,9 +282,15 @@ Function TapNextWithRetry()
                 TapNextWithRetry = True
                 Exit Function
             End If
+
+            // 只有在已经点到 NEXT 后，才把确认页验证等待计入已等待时间。
+            elapsed = elapsed + NextRetryIntervalSec + WaitTradePageSec + 3
+        Else
+            // NEXT 还没出现时，实际只等待了 TapNextWhenVisible 内部的 NextRetryIntervalSec。
+            // 不要把 WaitTradePageSec 也加进去，否则配置的 90 秒会在约 25 秒真实等待后提前过期。
+            elapsed = elapsed + NextRetryIntervalSec
         End If
 
-        elapsed = elapsed + NextRetryIntervalSec + WaitTradePageSec
         TracePrint "Retry NEXT elapsed=" & elapsed & "/" & NextRetryMaxSec
     Loop While elapsed < NextRetryMaxSec
 
