@@ -1,0 +1,336 @@
+// Pokemon GO 自动交易脚本（按键精灵手机助手）
+// 设备基准：iPhone 13 Pro / iOS 16.3，竖屏。
+// 第一性原则：不要相信截图红框/绝对坐标；优先在预期区域找“按钮颜色”，找到可点击按钮后再点。
+// 按键精灵文档说明 GetPixelColor 返回 BGR 十六进制颜色，本脚本据此做区域扫描。
+// 使用方式：从好友资料页开始运行（能看到 LOCAL TRADE / REMOTE TRADE / VIEW TRADE POKÉMON 的页面）。
+
+Dim BaseW, BaseH
+Dim ScreenW, ScreenH
+Dim MaxTrades, TradeCount
+Dim WaitPartnerMaxSec, WaitCompleteMaxSec, StepDelayMs
+Dim WaitPokemonListSec, WaitPokemonDetailSec, WaitTradePageSec, WaitReturnSec
+Dim NextRetryMaxSec, NextRetryIntervalSec
+Dim ScanStep, LastFoundX, LastFoundY
+
+BaseW = 960
+BaseH = 2079
+ScreenW = GetScreenX()
+ScreenH = GetScreenY()
+
+MaxTrades = 20                 // 最多循环交易次数；改成 0 表示无限循环（不建议第一次使用）
+WaitPokemonListSec = 12         // 点击交易入口后等待宝可梦列表加载的秒数
+WaitPokemonDetailSec = 12       // 选择宝可梦后等待详情/NEXT 页加载的秒数
+WaitTradePageSec = 15           // 点击 NEXT 后等待交易确认页加载的秒数
+WaitPartnerMaxSec = 240         // 点 CONFIRM 后等待对方确认/交易开始的最长秒数
+WaitCompleteMaxSec = 240        // 对方确认后，额外等待交易动画结束并回到宝可梦详情页的最长秒数
+WaitReturnSec = 12              // 点交易完成详情页 X 后等待回到好友/交易入口页的秒数
+NextRetryMaxSec = 90            // 进入宝可梦详情页后，最长持续尝试点击 NEXT 的秒数
+NextRetryIntervalSec = 5        // NEXT 没进入下一页时，每隔几秒再尝试一次
+StepDelayMs = 1500
+ScanStep = 8                    // 颜色扫描步长；越小越准但越慢
+TradeCount = 0
+LastFoundX = -1
+LastFoundY = -1
+
+// ===== 兼容旧截图坐标：只用于低风险入口/列表点击；关键按钮不用它 =====
+Function SX(x)
+    SX = x * ScreenW / BaseW
+End Function
+
+Function SY(y)
+    SY = y * ScreenH / BaseH
+End Function
+
+Sub SafeTap(x, y, note)
+    TracePrint "Tap " & note & " @ " & SX(x) & "," & SY(y)
+    Tap SX(x), SY(y)
+    Delay StepDelayMs
+End Sub
+
+Sub TapPoint(x, y, note)
+    TracePrint "Tap " & note & " @ " & x & "," & y
+    Tap x, y
+    Delay StepDelayMs
+End Sub
+
+Function HexDigitValue(ch)
+    ch = UCase(ch)
+    If ch = "0" Then
+        HexDigitValue = 0
+    ElseIf ch = "1" Then
+        HexDigitValue = 1
+    ElseIf ch = "2" Then
+        HexDigitValue = 2
+    ElseIf ch = "3" Then
+        HexDigitValue = 3
+    ElseIf ch = "4" Then
+        HexDigitValue = 4
+    ElseIf ch = "5" Then
+        HexDigitValue = 5
+    ElseIf ch = "6" Then
+        HexDigitValue = 6
+    ElseIf ch = "7" Then
+        HexDigitValue = 7
+    ElseIf ch = "8" Then
+        HexDigitValue = 8
+    ElseIf ch = "9" Then
+        HexDigitValue = 9
+    ElseIf ch = "A" Then
+        HexDigitValue = 10
+    ElseIf ch = "B" Then
+        HexDigitValue = 11
+    ElseIf ch = "C" Then
+        HexDigitValue = 12
+    ElseIf ch = "D" Then
+        HexDigitValue = 13
+    ElseIf ch = "E" Then
+        HexDigitValue = 14
+    ElseIf ch = "F" Then
+        HexDigitValue = 15
+    Else
+        HexDigitValue = 0
+    End If
+End Function
+
+Function HexPairToInt(pairText)
+    HexPairToInt = HexDigitValue(Mid(pairText, 1, 1)) * 16 + HexDigitValue(Mid(pairText, 2, 1))
+End Function
+
+Function PixelR(x, y)
+    Dim c
+    c = GetPixelColor(x, y, 0) // BGR: BBGGRR
+    PixelR = HexPairToInt(Mid(c, 5, 2))
+End Function
+
+Function PixelG(x, y)
+    Dim c
+    c = GetPixelColor(x, y, 0) // BGR: BBGGRR
+    PixelG = HexPairToInt(Mid(c, 3, 2))
+End Function
+
+Function PixelB(x, y)
+    Dim c
+    c = GetPixelColor(x, y, 0) // BGR: BBGGRR
+    PixelB = HexPairToInt(Mid(c, 1, 2))
+End Function
+
+Function IsGoGreen(x, y)
+    Dim r, g, b
+    r = PixelR(x, y)
+    g = PixelG(x, y)
+    b = PixelB(x, y)
+    // Pokemon GO 的 NEXT/CONFIRM/交易按钮是黄绿到青绿渐变；绿色分量明显高，且整体较亮。
+    IsGoGreen = (g >= 150 And r >= 35 And r <= 190 And b >= 70 And b <= 210 And g > r + 25 And g >= b - 20)
+End Function
+
+Function IsGoOrange(x, y)
+    Dim r, g, b
+    r = PixelR(x, y)
+    g = PixelG(x, y)
+    b = PixelB(x, y)
+    // 对方已确认时会出现橙色 CONFIRMED；只用于判断已经在交易页，不点击它。
+    IsGoOrange = (r >= 200 And g >= 120 And g <= 210 And b <= 120)
+End Function
+
+Function IsCloseCircle(x, y)
+    Dim r, g, b
+    r = PixelR(x, y)
+    g = PixelG(x, y)
+    b = PixelB(x, y)
+    // 交易完成详情页底部 X 是浅青/蓝绿色圆形，不再用截图固定坐标直接点。
+    IsCloseCircle = (g >= 145 And b >= 145 And r >= 90 And r <= 210 And Abs(g - b) <= 70)
+End Function
+
+Function FindColorInRegion(x1, y1, x2, y2, colorKind)
+    Dim x, y
+    LastFoundX = -1
+    LastFoundY = -1
+
+    For y = y1 To y2 Step ScanStep
+        For x = x1 To x2 Step ScanStep
+            If colorKind = "green" Then
+                If IsGoGreen(x, y) Then
+                    LastFoundX = x
+                    LastFoundY = y
+                    FindColorInRegion = True
+                    Exit Function
+                End If
+            ElseIf colorKind = "orange" Then
+                If IsGoOrange(x, y) Then
+                    LastFoundX = x
+                    LastFoundY = y
+                    FindColorInRegion = True
+                    Exit Function
+                End If
+            ElseIf colorKind = "close" Then
+                If IsCloseCircle(x, y) Then
+                    LastFoundX = x
+                    LastFoundY = y
+                    FindColorInRegion = True
+                    Exit Function
+                End If
+            End If
+        Next
+    Next
+
+    FindColorInRegion = False
+End Function
+
+Function WaitAndTapColorButton(x1, y1, x2, y2, colorKind, maxSec, note)
+    Dim elapsed, tapX, tapY
+    x1 = Int(x1)
+    y1 = Int(y1)
+    x2 = Int(x2)
+    y2 = Int(y2)
+    elapsed = 0
+
+    Do
+        If FindColorInRegion(x1, y1, x2, y2, colorKind) Then
+            tapX = LastFoundX + ScanStep * 2
+            tapY = LastFoundY + ScanStep * 2
+            If tapX > x2 Then
+                tapX = LastFoundX
+            End If
+            If tapY > y2 Then
+                tapY = LastFoundY
+            End If
+            TracePrint "Found " & note & " color=" & colorKind & " @ " & LastFoundX & "," & LastFoundY & "; tap=" & tapX & "," & tapY
+            TapPoint tapX, tapY, note
+            WaitAndTapColorButton = True
+            Exit Function
+        End If
+
+        TracePrint "Wait " & note & " color=" & colorKind & " " & elapsed & "/" & maxSec & " sec"
+        Delay 1000
+        elapsed = elapsed + 1
+    Loop While elapsed < maxSec
+
+    TracePrint "Timeout waiting " & note & " color=" & colorKind
+    WaitAndTapColorButton = False
+End Function
+
+Function WaitForColor(x1, y1, x2, y2, colorKind, maxSec, note)
+    Dim elapsed
+    x1 = Int(x1)
+    y1 = Int(y1)
+    x2 = Int(x2)
+    y2 = Int(y2)
+    elapsed = 0
+
+    Do
+        If FindColorInRegion(x1, y1, x2, y2, colorKind) Then
+            TracePrint "Detected " & note & " color=" & colorKind & " @ " & LastFoundX & "," & LastFoundY
+            WaitForColor = True
+            Exit Function
+        End If
+
+        TracePrint "Wait detect " & note & " " & elapsed & "/" & maxSec & " sec"
+        Delay 1000
+        elapsed = elapsed + 1
+    Loop While elapsed < maxSec
+
+    WaitForColor = False
+End Function
+
+Function WaitSeconds(sec, reason)
+    Dim i
+    For i = 1 To sec
+        TracePrint "Wait " & reason & " " & i & "/" & sec & " sec"
+        Delay 1000
+    Next
+    WaitSeconds = True
+End Function
+
+Sub TapTradeEntry()
+    // 交易入口在好友页底部；这里仍保留坐标，因为该页没有稳定的大面积独特色块。
+    SafeTap 386, 1555, "LOCAL TRADE"
+End Sub
+
+Sub TapFirstPokemon()
+    // 宝可梦列表第一格；选择对象本来就是“第一个宝可梦”，这里可接受坐标点击。
+    SafeTap 210, 645, "FIRST POKEMON"
+End Sub
+
+Function TapNextWhenVisible()
+    // NEXT 是底部中间绿色按钮：只在屏幕下半部中间区域找绿色，避免误点其它对象。
+    TapNextWhenVisible = WaitAndTapColorButton(ScreenW * 20 / 100, ScreenH * 62 / 100, ScreenW * 80 / 100, ScreenH * 90 / 100, "green", NextRetryIntervalSec, "NEXT")
+End Function
+
+Function TapConfirmWhenVisible()
+    // CONFIRM 在交易页左侧中下区域。只点扫描到的绿色按钮像素，避免点到左下我方宝可梦。
+    TapConfirmWhenVisible = WaitAndTapColorButton(0, ScreenH * 38 / 100, ScreenW * 45 / 100, ScreenH * 62 / 100, "green", WaitTradePageSec, "CONFIRM")
+End Function
+
+Function TapCloseWhenVisible()
+    // 交易完成详情页底部 X：只在底部中间区域找浅青圆形，不再盲点固定坐标。
+    TapCloseWhenVisible = WaitAndTapColorButton(ScreenW * 35 / 100, ScreenH * 80 / 100, ScreenW * 65 / 100, ScreenH * 96 / 100, "close", WaitCompleteMaxSec, "DETAIL CLOSE X")
+End Function
+
+Function TapNextWithRetry()
+    Dim elapsed
+    elapsed = 0
+
+    Do
+        If TapNextWhenVisible() Then
+            // NEXT 点中后，确认页左侧绿色 CONFIRM 或右侧橙色 CONFIRMED 会出现；检测到任一即可停止重试 NEXT。
+            If WaitForColor(0, ScreenH * 35 / 100, ScreenW, ScreenH * 65 / 100, "orange", WaitTradePageSec, "trade page confirmed marker") Then
+                TapNextWithRetry = True
+                Exit Function
+            End If
+            If WaitForColor(0, ScreenH * 38 / 100, ScreenW * 45 / 100, ScreenH * 62 / 100, "green", 3, "trade page confirm button") Then
+                TapNextWithRetry = True
+                Exit Function
+            End If
+        End If
+
+        elapsed = elapsed + NextRetryIntervalSec + WaitTradePageSec
+        TracePrint "Retry NEXT elapsed=" & elapsed & "/" & NextRetryMaxSec
+    Loop While elapsed < NextRetryMaxSec
+
+    TapNextWithRetry = False
+End Function
+
+Sub OneTrade()
+    TracePrint "===== Trade round " & (TradeCount + 1) & " start ====="
+
+    TapTradeEntry()
+    WaitSeconds WaitPokemonListSec, "pokemon list"
+
+    TapFirstPokemon()
+    WaitSeconds WaitPokemonDetailSec, "pokemon detail"
+
+    If TapNextWithRetry() = False Then
+        TracePrint "NEXT failed: stop this round to avoid tapping the wrong screen."
+        ExitScript
+    End If
+
+    If TapConfirmWhenVisible() = False Then
+        TracePrint "CONFIRM not visible: stop to avoid tapping selected Pokemon/card."
+        ExitScript
+    End If
+
+    // 对方未确认时同一区域会变 CANCEL，所以确认只点一次；之后只等待颜色/完成页。
+    WaitSeconds WaitPartnerMaxSec, "partner confirm / trade start"
+
+    If TapCloseWhenVisible() = False Then
+        TracePrint "Detail close X not visible after completion wait; stop to avoid wrong-state loop."
+        ExitScript
+    End If
+
+    WaitSeconds WaitReturnSec, "return to friend/trade page"
+
+    TradeCount = TradeCount + 1
+    TracePrint "===== Trade round " & TradeCount & " done ====="
+End Sub
+
+TracePrint "Auto trade start. Screen=" & ScreenW & "x" & ScreenH & ", Base=" & BaseW & "x" & BaseH
+
+Do
+    OneTrade()
+    If MaxTrades > 0 Then
+        If TradeCount >= MaxTrades Then
+            TracePrint "Reached MaxTrades=" & MaxTrades & ", script stopped."
+            Exit Do
+        End If
+    End If
+Loop
