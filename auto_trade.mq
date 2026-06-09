@@ -7,6 +7,7 @@ Dim BaseW, BaseH
 Dim ScreenW, ScreenH
 Dim MaxTrades, TradeCount
 Dim WaitPartnerMaxSec, WaitCompleteMaxSec, StepDelayMs
+Dim NextRetryMaxSec, NextRetryIntervalSec
 
 BaseW = 960
 BaseH = 2079
@@ -16,6 +17,8 @@ ScreenH = GetScreenY()
 MaxTrades = 20              // 最多循环交易次数；改成 0 表示无限循环（不建议第一次使用）
 WaitPartnerMaxSec = 180     // 点 CONFIRM 后等待对方确认/交易开始的最长秒数
 WaitCompleteMaxSec = 180    // 对方确认后，额外等待交易动画结束并回到宝可梦详情页的最长秒数
+NextRetryMaxSec = 45         // 进入宝可梦详情页后，最长持续尝试点击 NEXT 的秒数
+NextRetryIntervalSec = 3     // NEXT 没进入下一页时，每隔几秒再点一次；成功进入下一页后点这里通常没有副作用
 StepDelayMs = 1200
 TradeCount = 0
 
@@ -46,8 +49,24 @@ Sub TapFirstPokemon()
 End Sub
 
 Sub TapNext()
-    // 宝可梦详情/交易选择页：NEXT 按钮中心（截图第 3 张，约 x=490,y=1790）
-    SafeTap 490, 1790, "NEXT"
+    // 宝可梦详情/交易选择页：NEXT 按钮中心。
+    // 新截图中 NEXT 按钮中心更接近 x=460,y=1760（按 960x2079 基准换算），
+    // 比旧坐标 x=490,y=1790 更居中，降低点到按钮下沿/空白处的概率。
+    SafeTap 460, 1760, "NEXT"
+End Sub
+
+Sub TapNextWithRetry()
+    Dim elapsed
+    elapsed = 0
+
+    // 这里必须重复尝试 NEXT，而不能只点一次后直接进入 CONFIRM 流程。
+    // 如果第一次 NEXT 没点中，旧流程会继续点 CONFIRM 坐标并进入长等待；用户手动补点 NEXT 后，
+    // 脚本也已经错过 CONFIRM 时机。重复 NEXT 可以让脚本停留在“进入确认页之前”的状态机里。
+    Do
+        TapNext()
+        WaitSeconds NextRetryIntervalSec, "NEXT page transition"
+        elapsed = elapsed + NextRetryIntervalSec
+    Loop While elapsed < NextRetryMaxSec
 End Sub
 
 Sub TapConfirm()
@@ -83,8 +102,8 @@ Sub OneTrade()
     TapFirstPokemon()
     WaitSeconds 3, "pokemon detail"
 
-    TapNext()
-    WaitSeconds 5, "trade confirm page"
+    TapNextWithRetry()
+    WaitSeconds 2, "trade confirm page settle"
 
     TapConfirm()
 
