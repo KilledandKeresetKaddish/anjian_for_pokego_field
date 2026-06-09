@@ -22,8 +22,8 @@
 4. 不做固定硬等，马上开始扫描绿色 `NEXT` 按钮；`NEXT` 一出现就点击。
 5. 点击后验证是否进入交易确认页；如果仍停在 `NEXT` 页，会继续扫描并重试。
 6. 扫描并点击左侧绿色 `CONFIRM` 按钮；找不到就停止，避免点到我方宝可梦。
-7. 等待对方确认/交易开始。
-8. 扫描底部浅青色 `X`，确认交易完成详情页出现后再关闭。
+7. 点 `CONFIRM` 后不固定睡眠，直接持续扫描交易完成页底部浅青色 `X`。
+8. `X` 一出现就立刻点击关闭；如果超过检测上限还没出现才停止/进入补充检测。
 9. 等待回到好友/交易入口页，然后循环下一次。
 
 ## 等待时间配置
@@ -33,8 +33,8 @@
 - `WaitPokemonListSec`：点击交易入口后等列表出现。
 - `WaitPokemonDetailSec`：选择宝可梦后等待 `NEXT` 按钮出现的最长秒数；脚本不会硬等完整秒数，按钮一出现就会点。
 - `WaitTradePageSec`：点击 NEXT 后等确认页出现。
-- `WaitPartnerMaxSec`：点 CONFIRM 后等对方确认/交易开始。
-- `WaitCompleteMaxSec`：等待交易动画结束、底部 X 出现。
+- `WaitPartnerMaxSec`：点 `CONFIRM` 后扫描完成页 `X` 的最长检测时间；这是上限，不是固定等待，`X` 一出现就会继续。
+- `WaitCompleteMaxSec`：第一段检测没看到 `X` 时的补充检测时间；同样是上限，不是固定等待。
 - `WaitReturnSec`：点 X 后等回到好友/交易页。
 - `NextRetryMaxSec` / `NextRetryIntervalSec`：`NEXT` 已出现但点击后没有进入交易页时的重试总时长和间隔。
 
