@@ -1,6 +1,6 @@
 // Pokemon GO 自动交易脚本（按键精灵手机助手 / iPhone 13 Pro, iOS 16.3, 竖屏）
 // =====================================================================
-// 版本：v7.1（2026-06-10）
+// 版本：v7.3（2026-06-10）
 // 启动日志第一行会打印本版本号——每次测试前先核对日志里的版本，避免误测旧版（出过一次）。
 // 版本历史：
 //   v1  逐像素 GetPixelColor 扫描慢到等于卡死 -> 改原生 FindColor 区域找色
@@ -15,6 +15,25 @@
 //        卡死时打印双探针诊断后安全退出
 //   v7.1 轮前标记三连确认后改为安全退出（codex review：v7.0 只告警就继续，真有残留
 //        详情页时入口坐标 386,1555 会盲点到 POWER UP / EVOLVE，可能消耗星尘/误进化）
+//   v7.2 修“开局把白底样式好友页误判成详情页”（v7.1 实测双探针一起误报：
+//        绿长钮=有(174,1536)、白卡列=有(718,997)）：
+//        ① 绿长钮误报源是好友页 74%~79% 高度的四枚青色功能图标（SEND GIFT / LOCAL
+//           TRADE / REMOTE TRADE / BATTLE）：图标间距 ~150px，旧验证只查“+150~280
+//           还有同色”，恰好撞上相邻图标 -> 长条按钮加“实心连续五连窗”验证，
+//           图标间空隙必让某个整窗落空，真按钮是实心长条不受影响；
+//        ② 白卡误报源是好友页的“白底样式”（人物背景整片纯白 + 队徽水印，并非 v7
+//           假设的天空场景）：右侧白色长列在这种样式上天然成立，白色本身已无法
+//           区分两页 -> 新增“好友页锚点”（LOCAL TRADE + BATTLE 双图标 + 间隙净空）
+//           对页面标记一票否决；BATTLE 锚点窗位于按钮永远够不着的 81%~86%，
+//           在详情页上恒为不成立，否决不会吞掉真详情页。
+//   v7.3 开局判定反转 + 等待全面检测驱动（用户反馈：开局本就不该在详情页，
+//        固定等待也太多）：轮前不再默认怀疑“详情页没关”——使用方式本就要求从
+//        好友页开始、收尾也已验证过“标记消失”——改为正向确认好友页：锚点
+//        （LOCAL TRADE + BATTLE）一出现立即放行，入口点的就是刚确认过的图标本尊；
+//        锚点超时才转标记三连确认（真残留仍安全退出；锚点失效如 BATTLE 变灰则
+//        告警后放行，由 NEXT 超时兜底）。固定等待替换：点入口后 4 秒盲等 ->
+//        “锚点消失=已切页”检测（没切走自动补点入口）；收尾后 5 秒盲等 -> 删除，
+//        并入下轮开头的“锚点就绪”检测；删 WaitSeconds 及其逐秒刷屏日志。
 // =====================================================================
 //
 // ===== 核心思路 =====
@@ -26,11 +45,13 @@
 // 任何一步限时内等不到预期状态就打日志安全退出，绝不盲点。
 //
 // ===== 防误点设计（多轮实测迭代） =====
-// 1. 长条按钮（NEXT / CONFIRM / 橙色 CANCEL / 详情页 POWER UP）要求三重验证：
-//    色点贴左（位置约束）+ 右侧 150~280px 仍是同色 + 下方 45~90px 仍是同色。
-//    真按钮都是 340px+ 的长条，轻松通过；好友页“64 LEVEL”两行青色文字宽约 95px、
-//    纵向也有厚度，曾骗过旧的 60px 横向检查、导致开局把好友页误判成详情页并点掉了
-//    好友页的 X（实测翻车）——150px 起跳后它够不着。
+// 1. 长条按钮（NEXT / CONFIRM / 橙色 CANCEL / 详情页 POWER UP）要求四重验证：
+//    色点贴左（位置约束）+ 实心连续五连窗 + 右侧 150~280px 仍是同色 + 下方 45~90px
+//    仍是同色。真按钮都是 340px+ 的实心长条，轻松通过。
+//    好友页“64 LEVEL”两行青色文字宽约 95px，曾骗过旧的 60px 横向检查（v5 加严到
+//    150px 起跳后够不着）；好友页四枚青色功能图标间距 ~150px，又恰好让“+150~280
+//    还有同色”撞上相邻图标（v7.1 实测开局误报）——v7.2 起候选点右侧 +20~+215 的
+//    五个窗口都必须仍是同色，150px 的图标空隙必让某个整窗落空，直接否决。
 //    候选点验证失败不放弃：从该点下方继续搜索（FindColor 只返回最上面的匹配点，
 //    不续搜的话一个同色杂点就会一直挡住下方的真按钮）。
 // 2. 颜色只按 BGR 一种口径解析。绝不能为“兼容 RGB”同时检测 R/B 互换色：
@@ -43,8 +64,15 @@
 //    v7 教训：这个标记在“好友页”上必须为 False，否则脚本会把好友页自己的 X 点掉。
 //    v6 的白卡探针只验证下方 40~90px 一小段，被好友页 48%~56% 人物场景里的白色元素
 //    （云朵/白色伙伴宝可梦/白色衣物）骗过，开局直接误判成详情页；v7 改为纵向长列
-//    （场景元素下缘是天空蓝/地面色，四段过不全），且轮前复查绝不补点 X：
-//    打印诊断，三连确认残留就安全退出、提示手动收尾（见 PreEntryGuard）。
+//    （场景元素下缘是天空蓝/地面色，四段过不全），且轮前绝不补点 X：
+//    v7.3 起正常轮次由锚点正向确认放行，锚点超时才打诊断做三连确认，
+//    确认残留就安全退出、提示手动收尾（见 PreEntryGate）。
+//    v7.2 教训：好友页还有“白底样式”（人物背景整片纯白 + 队徽水印），右侧白色长列
+//    在这种样式上天然成立（实测 白卡列=有(718,997)），白色本身已无法区分两页。
+//    所以页面标记新增“好友页锚点”一票否决（见 FriendAnchorsVisible）：LOCAL TRADE
+//    与 BATTLE 双图标定位 + 图标间净空同时成立即确认好友页、标记强制 False；
+//    BATTLE 锚点窗（81%~86%）在详情页上是白卡内容区，按钮最宽到 ~42% 永远够不着，
+//    锚点在详情页恒为不成立，否决不会吞掉真详情页。
 // 4. 完成页 X 的圆钮判定：候选点正下方窄列 25~85px 必须仍是同色（X 是实心青色圆钮）。
 //    GYMS & RAIDS 选中页签的细下划线压在检测带顶上时（实测正是它抢走了候选点，
 //    导致一直点到 385,1874 而真 X 在 485,1949），正下方是白底，一票否决。
@@ -58,19 +86,21 @@
 //
 // ===== 使用方式 =====
 // 从好友资料页开始运行（能看到 SEND GIFT / LOCAL TRADE / REMOTE TRADE 的页面）。
-// 流程：LOCAL TRADE -> 短暂缓冲后点第一只宝可梦（NEXT 没出现会自动重选）
+// 流程：等好友页锚点就绪（默认就该在好友页：锚点一出现立即开始，无固定等待；
+//       锚点超时才做“标记三连确认”，确认有残留详情页则安全退出，绝不乱点）
+//      -> LOCAL TRADE（“锚点消失=已切到列表”检测驱动，没切走自动补点一次）
+//      -> 点第一只宝可梦（NEXT 没出现会自动重选）
 //      -> 绿色 NEXT 出现就点（验证页面切走） -> 对方选好后绿色 CONFIRM 出现就点
 //      -> 验证变橙色 CANCEL（对方先确认导致橙色一闪而过也有兜底判定）
 //      -> 橙色消失 = 双方确认、动画开始 -> 等“详情页标记”出现 -> 找底部 X 点掉
-//      -> 验证“详情页标记”消失 -> 回好友页进入下一轮
-//      （轮前打印标记诊断：干净就继续；三连确认有残留详情页则安全退出，绝不点 X）。
+//      -> 验证“详情页标记”消失 -> 直接进入下一轮（开头的锚点就绪等待就是回页缓冲）。
 
 Dim ScreenW, ScreenH
 Dim BaseW, BaseH
 Dim MaxTrades, TradeCount
 Dim StepDelayMs
-Dim ListSettleSec, SelectRetryIntervalSec, WaitNextMaxSec, NextRetryMaxSec
-Dim WaitPartnerSelectSec, WaitPartnerConfirmSec, WaitCompleteMaxSec, ReturnSettleSec
+Dim FriendReadyMaxSec, LeaveFriendMaxSec, SelectRetryIntervalSec, WaitNextMaxSec, NextRetryMaxSec
+Dim WaitPartnerSelectSec, WaitPartnerConfirmSec, WaitCompleteMaxSec
 Dim GreenBtnSpec, OrangeSpec, CloseSpec, WhiteCardSpec
 Dim NextX1, NextY1, NextX2, NextY2, NextLeftMaxX
 Dim ConfX1, ConfY1, ConfX2, ConfY2, ConfLeftMaxX
@@ -78,13 +108,14 @@ Dim CloseX1, CloseY1, CloseX2, CloseY2
 Dim CloseFallbackX
 Dim DetX1, DetY1, DetX2, DetY2, DetLeftMaxX
 Dim CardX1, CardY1, CardX2, CardY2
+Dim FriIconY1, FriIconY2, FriLtX1, FriLtX2, FriBtX1, FriBtX2, FriGapX1, FriGapX2
 Dim FoundX, FoundY
 Dim PillFoundX, PillFoundY, PillTapX, PillTapY
 Dim CloseFoundX, CloseFoundY, CloseTapX, CloseTapY
 Dim CardFoundX, CardFoundY
 Dim ScriptVersion
 
-ScriptVersion = "v7.1"        // 与文件头版本号保持一致；启动日志会打印，测试前先核对
+ScriptVersion = "v7.3"        // 与文件头版本号保持一致；启动日志会打印，测试前先核对
 BaseW = 960
 BaseH = 2079
 ScreenW = GetScreenX()
@@ -92,20 +123,26 @@ ScreenH = GetScreenY()
 
 // ===================== 可调参数 =====================
 MaxTrades = 20                // 最多交易轮数；0 = 无限循环（第一次使用不建议）
-ListSettleSec = 4             // 点 LOCAL TRADE 后的短缓冲；列表慢没关系，下一步会自动重选
+FriendReadyMaxSec = 10        // 轮前等“好友页锚点”出现的上限：检测驱动，一出现立即开始本轮；
+                              // 超时才转入标记三连确认兜底。好友不在附近时 BATTLE 图标变灰、
+                              // 锚点永远不成立——那种场景每轮会等满这个秒数，可按需调小
+LeaveFriendMaxSec = 8         // 点 LOCAL TRADE 后等“锚点消失=已切去选宝可梦列表”的上限；
+                              // 超时自动补点一次入口（取代旧版 4 秒盲等）
 SelectRetryIntervalSec = 6    // NEXT 没出现时，每隔几秒再点一次第一只宝可梦（兼容列表加载慢）
 WaitNextMaxSec = 120          // 等 NEXT 按钮出现的最长秒数（上限，按钮一出现就点）
 NextRetryMaxSec = 45          // 点了 NEXT 但页面没切走时，持续重点 NEXT 的最长秒数
 WaitPartnerSelectSec = 240    // 等对方选好宝可梦 + CONFIRM 可点 + 确认生效（变橙）的最长秒数
 WaitPartnerConfirmSec = 300   // 自己确认后（橙色 CANCEL 期间）等对方确认的最长秒数；期间只检测、不乱点
 WaitCompleteMaxSec = 150      // 双方确认后，等动画放完 + 详情页出现 + X 点掉 + 标记消失的总上限
-ReturnSettleSec = 5           // 详情页确认关闭后回好友页的短缓冲（轮前还会打印标记诊断）
 StepDelayMs = 1500            // 坐标点击后的固定缓冲
 
 // ===================== 颜色定义（BGR + 偏色） =====================
 // 绿色长条按钮（NEXT / CONFIRM / POWER UP 等）：PoGo 按钮是黄绿到青绿渐变。
 // 容差盒：R 60~170, G 168~242, B 40~200。排除白色文字、浅蓝天空、灰蓝 WAITING 角标、
 // 深青色界面文字（“64”等级、VIEW TRADE 等文字 G<168 进不来）。
+// 注意：好友页功能行的青色图标（SEND GIFT / LOCAL TRADE / BATTLE 等）也落在这个
+// 容差盒内（v7.1 实测），靠 FindPillIn 的“实心连续”验证与好友页锚点区分，
+// 同时 FriendAnchorsVisible 反过来用它定位这排图标。
 GreenBtnSpec = "78CD73-502537"
 // 橙色 CANCEL 长条按钮（BGR）。只能用 BGR 一种写法，见头部说明第 2 条。
 OrangeSpec = "3BA3F2-304040"
@@ -144,7 +181,10 @@ CloseY2 = Int(ScreenH * 98 / 100)
 CloseFallbackX = Int(ScreenW * 505 / 1000)
 
 // “宝可梦详情页开着”的页面标记：左侧 60%~84% 高度的绿色长按钮（POWER UP / EVOLVE / CHANGE FORM）。
-// 好友页同区域只有“64”等级数字（细字，过不了横/纵双重验证）和位置偏右的彩色小图标。
+// 好友页同区域的干扰源（v7.2 实测更正）：“64 LEVEL”青色文字（过不了 150px 横向验证）
+// 和 74%~79% 高度的四枚青色功能图标行——SEND GIFT 图标顶就在带内 x<25% 的位置
+// （v7.1 误报命中点 174,1536），间距 ~150px 恰好让“+150~280 还有同色”撞上相邻图标，
+// 由“实心连续五连窗”验证否决（见 FindPillIn）。
 DetX1 = Int(ScreenW * 2 / 100)
 DetY1 = Int(ScreenH * 60 / 100)
 DetX2 = Int(ScreenW * 50 / 100)
@@ -161,6 +201,22 @@ CardX1 = Int(ScreenW * 74 / 100)
 CardY1 = Int(ScreenH * 48 / 100)
 CardX2 = Int(ScreenW * 86 / 100)
 CardY2 = Int(ScreenH * 56 / 100)
+
+// 好友页锚点窗（v7.2，页面标记的一票否决）：好友资料页中部功能行的 LOCAL TRADE 与
+// BATTLE 两枚青色图标。两种好友页样式（白底/场景背景）下这一行都画在白色面板上、
+// 位置固定：图标行实测高度约 74.5%~78.8%（图标顶 ~73.9%、高 ~5%），LOCAL TRADE 约
+// 35%~43%，BATTLE 约 81%~86%（右缘收在 86% 内，避开 x≥87% 的 LiveFeed 悬浮窗）。
+// 两图标之间 46%~55% 必须净空（无同色），排除横贯整行的长条色块。
+// 详情页上按钮最宽到 ~42%，BATTLE 窗位置是白卡内容区，绝不会出现青绿色，
+// 所以锚点在详情页上恒为不成立——用作否决是安全的（见 FriendAnchorsVisible）。
+FriIconY1 = Int(ScreenH * 745 / 1000)
+FriIconY2 = Int(ScreenH * 788 / 1000)
+FriLtX1 = Int(ScreenW * 35 / 100)
+FriLtX2 = Int(ScreenW * 43 / 100)
+FriBtX1 = Int(ScreenW * 81 / 100)
+FriBtX2 = Int(ScreenW * 86 / 100)
+FriGapX1 = Int(ScreenW * 46 / 100)
+FriGapX2 = Int(ScreenW * 55 / 100)
 
 TradeCount = 0
 FoundX = -1
@@ -189,15 +245,6 @@ Sub TapPoint(x, y, note)
     Tap Int(x), Int(y)
     Delay 800
 End Sub
-
-Function WaitSeconds(sec, reason)
-    Dim i
-    For i = 1 To sec
-        TracePrint "Wait " & reason & " " & i & "/" & sec & " sec"
-        Delay 1000
-    Next
-    WaitSeconds = True
-End Function
 
 // 在区域内找一种颜色（原生 FindColor，毫秒级）。找到返回 True 并写入 FoundX/FoundY。
 Function FindSpecIn(x1, y1, x2, y2, spec)
@@ -232,14 +279,21 @@ Function FindSpecIn(x1, y1, x2, y2, spec)
     End If
 End Function
 
-// 找“长条按钮”：候选色点 + 位置约束 + 右侧横向延伸验证 + 下方纵向延伸验证。
+// 找“长条按钮”：候选色点 + 位置约束 + 实心连续验证 + 右侧横向延伸验证 + 下方纵向延伸验证。
 // FindColor（方向 0）只返回区域里最上面的第一个匹配点，所以任何一项验证失败都不能直接放弃：
 // 把搜索区域上沿挪到该候选点下方再找，孤立杂点/文字行/位置不对的色块挡不住更靠下的真按钮。
 // maxLeftX：按钮左缘必须出现在这个 x 以内（这些按钮都是贴左或偏左的长条）。
+// 实心连续验证（v7.2 新增）：候选点右侧 +20~+215 摆 5 个 35px 宽窗口（步距 40px），
+// 每个窗口里都必须仍能找到同色。真按钮是 340px+ 的实心长条，候选点是左上圆角顶点、
+// 其右侧 ~225px 内全是按钮面，五窗全过；好友页四枚青色功能图标单枚仅 ~75px 宽、
+// 间距 ~150px，旧版只查“+150~280 一段”恰好撞上相邻图标（v7.1 实测开局误报：
+// 候选点 174,1536 在 SEND GIFT 图标顶、+150~280 撞上 LOCAL TRADE 图标、下方窗撞上
+// 图标自身下半）——150px 空隙比窗口步距宽，五连窗必有整窗落进空隙，直接否决。
+// 窗口越出搜索区右缘时跳过该窗（无法证伪不算失败；+150~280 的总长验证仍必须通过）。
 // 通过后 PillFoundX/Y 是按钮上沿色点，PillTapX/Y 是建议点击点（按钮内部）。
 Function FindPillIn(x1, y1, x2, y2, spec, maxLeftX)
-    Dim curY1, guard, candX, candY, tapX, okH, okV
-    Dim hx1, hx2, hy2, vx1, vx2, vy1, vy2
+    Dim curY1, guard, candX, candY, tapX, okSolid, okH, okV
+    Dim sIdx, sx1, sx2, hx1, hx2, hy2, vx1, vx2, vy1, vy2
     FindPillIn = False
     PillFoundX = -1
     PillFoundY = -1
@@ -252,23 +306,42 @@ Function FindPillIn(x1, y1, x2, y2, spec, maxLeftX)
         End If
         candX = FoundX
         candY = FoundY
+        okSolid = False
         okH = False
         okV = False
         tapX = -1
         If candX <= maxLeftX Then
+            // 实心连续五连窗（候选行顶 0~14px 同一带高，与横向验证同口径）
+            okSolid = True
+            For sIdx = 0 To 4
+                If okSolid Then
+                    sx1 = candX + 20 + sIdx * 40
+                    sx2 = sx1 + 35
+                    If sx2 > x2 Then
+                        sx2 = x2
+                    End If
+                    If sx1 < sx2 Then
+                        If FindSpecIn(sx1, candY, sx2, candY + 14, spec) = False Then
+                            okSolid = False
+                        End If
+                    End If
+                End If
+            Next
             // 横向验证：右侧 150~280px 仍是同色。真按钮都是 340px+ 的长条；
             // 好友页“64 LEVEL”两行青色大字宽约 95px（实测骗过了旧的 60px 检查，
             // 把好友页误判成详情页），“+4”金色文本等更短——150px 起跳后都够不着。
-            hx1 = candX + 150
-            hx2 = candX + 280
-            hy2 = candY + 14
-            If hx2 > x2 Then
-                hx2 = x2
-            End If
-            If hx1 < hx2 Then
-                If FindSpecIn(hx1, candY, hx2, hy2, spec) Then
-                    okH = True
-                    tapX = FoundX
+            If okSolid Then
+                hx1 = candX + 150
+                hx2 = candX + 280
+                hy2 = candY + 14
+                If hx2 > x2 Then
+                    hx2 = x2
+                End If
+                If hx1 < hx2 Then
+                    If FindSpecIn(hx1, candY, hx2, hy2, spec) Then
+                        okH = True
+                        tapX = FoundX
+                    End If
                 End If
             End If
             // 纵向验证：下方 45~90px 仍是同色（按钮有 ~120px 高；文字行没有这个纵向厚度）
@@ -383,31 +456,63 @@ Function DetailCardVisible()
     DetailCardVisible = True
 End Function
 
-// 宝可梦详情页是否开着：左侧贴左的绿色长按钮（POWER UP / EVOLVE / CHANGE FORM）
-// 或右侧大白卡“纵向长列”探针（v7 加严版），二者有一即可。只看绿按钮是不够的——
-// POWER UP 会因星尘/糖果不足变灰、满级宝可梦可能没有任何绿色按钮（codex review
-// 指出的边界），白卡不依赖按钮状态。这个标记的硬性要求是“在好友页上必须为 False”：
-// v5（64 LEVEL 文字）、v6（白卡单段探针）两次翻车都是它在好友页误报，
-// 所以两个探针的验证都按好友页的干扰源加严过，再误报先看 ProbeAndLogMarker 的诊断行。
-// 不再用“X 还在不在”判断——好友页底部也有同款 X，会永远误判。
-Function DetailPageOpen()
-    DetailPageOpen = True
-    If FindPillIn(DetX1, DetY1, DetX2, DetY2, GreenBtnSpec, DetLeftMaxX) Then
+// 好友页锚点定位（v7.2）：LOCAL TRADE 图标窗有青绿色 + BATTLE 图标窗有青绿色 +
+// 两窗之间净空，三个条件同时成立 = 确认当前站在好友资料页。
+// 用 GreenBtnSpec 检测——v7.1 实测好友页这排图标的青绿色恰好落在这个容差盒内
+// （当时正是它们骗过了绿长钮探针），现在反过来拿它们当好友页的指纹。
+// 间隙净空排除“横贯整行的长条色块”同时点亮两窗的情况。
+// 已知边界：BATTLE 图标在好友不在附近时会变灰，锚点会不成立——后果只是退回 v7.1
+// 的行为（误报时三连确认后安全退出），不会引入新的误动作。
+Function FriendAnchorsVisible()
+    FriendAnchorsVisible = False
+    If FindSpecIn(FriLtX1, FriIconY1, FriLtX2, FriIconY2, GreenBtnSpec) = False Then
         Exit Function
     End If
-    If DetailCardVisible() Then
+    If FindSpecIn(FriBtX1, FriIconY1, FriBtX2, FriIconY2, GreenBtnSpec) = False Then
         Exit Function
     End If
-    DetailPageOpen = False
+    If FindSpecIn(FriGapX1, FriIconY1, FriGapX2, FriIconY2, GreenBtnSpec) Then
+        Exit Function
+    End If
+    FriendAnchorsVisible = True
 End Function
 
-// 标记诊断：分别评估两个探针、打一行带坐标的日志，返回“标记是否成立”。
-// 用于轮前复查和收尾卡死定位——哪个探针在哪个坐标命中，一行日志就能看出来；
-// 再误报时把这行日志发回即可直接校准。高频轮询仍用上面静默的 DetailPageOpen()。
+// 宝可梦详情页是否开着：左侧贴左的绿色长按钮（POWER UP / EVOLVE / CHANGE FORM）
+// 或右侧大白卡“纵向长列”探针（v7 加严版），二者有一即可；但好友页锚点成立时
+// 一票否决（v7.2）——好友页存在“白底样式”（人物背景整片纯白），右侧白色长列在
+// 这种样式上天然成立，白色本身已无法区分两页，而锚点在详情页上恒为不成立
+// （见 FriendAnchorsVisible 的区域注释），否决不会吞掉真详情页。
+// 只看绿按钮是不够的——POWER UP 会因星尘/糖果不足变灰、满级宝可梦可能没有任何
+// 绿色按钮（codex review 指出的边界），白卡不依赖按钮状态。这个标记的硬性要求是
+// “在好友页上必须为 False”：v5（64 LEVEL 文字）、v6（白卡单段探针）、v7.1（图标行
+// + 白底样式）三次翻车都是它在好友页误报，再误报先看 ProbeAndLogMarker 的诊断行。
+// 不再用“X 还在不在”判断——好友页底部也有同款 X，会永远误判。
+Function DetailPageOpen()
+    Dim hit
+    hit = False
+    If FindPillIn(DetX1, DetY1, DetX2, DetY2, GreenBtnSpec, DetLeftMaxX) Then
+        hit = True
+    ElseIf DetailCardVisible() Then
+        hit = True
+    End If
+    If hit Then
+        If FriendAnchorsVisible() Then
+            hit = False
+        End If
+    End If
+    DetailPageOpen = hit
+End Function
+
+// 标记诊断：分别评估两个探针和好友页锚点、打一行带坐标的日志，返回“标记是否成立”
+// （口径与 DetailPageOpen 完全一致：绿长钮或白卡列命中，且好友页锚点不成立）。
+// 用于轮前复查和收尾卡死定位——哪个探针在哪个坐标命中、锚点有没有否决，
+// 一行日志就能看出来；再误报时把这行日志发回即可直接校准。
+// 高频轮询仍用上面静默的 DetailPageOpen()。
 Function ProbeAndLogMarker(tag)
-    Dim g, w, msg
+    Dim g, w, f, msg
     g = FindPillIn(DetX1, DetY1, DetX2, DetY2, GreenBtnSpec, DetLeftMaxX)
     w = DetailCardVisible()
+    f = False
     If g Then
         msg = "绿长钮=有(" & PillFoundX & "," & PillFoundY & ")"
     Else
@@ -418,8 +523,20 @@ Function ProbeAndLogMarker(tag)
     Else
         msg = msg & "，白卡列=无"
     End If
-    TracePrint "标记诊断[" & tag & "]：" & msg
     If g Then
+        f = FriendAnchorsVisible()
+    ElseIf w Then
+        f = FriendAnchorsVisible()
+    End If
+    If f Then
+        msg = msg & "，好友锚点=成立 -> 一票否决，按好友页处理"
+    ElseIf g Or w Then
+        msg = msg & "，好友锚点=不成立 -> 标记维持成立"
+    End If
+    TracePrint "标记诊断[" & tag & "]：" & msg
+    If f Then
+        ProbeAndLogMarker = False
+    ElseIf g Then
         ProbeAndLogMarker = True
     ElseIf w Then
         ProbeAndLogMarker = True
@@ -457,29 +574,73 @@ Sub TapCloseFallback(idx)
     TapPoint CloseFallbackX, fy, "完成页 X（比例兜底档位 " & m & "）"
 End Sub
 
-// 轮前复查（v7 起绝不点击任何东西；v7.1 起确认残留即安全退出）：
-// 每轮开始时人应当站在好友页上。两类风险都必须从机制上排除：
-// - 不能补点 X：v5（“64 LEVEL”文字）和 v6（白卡单段探针）都发生过“标记在好友页
-//   误报 -> 去找 X -> 找到的恰是好友页底部那颗真 X（实测 485,1949）-> 把好友资料页
-//   点关、整轮报废”的事故。
-// - 也不能告警后继续走主流程（v7.0 的做法，codex review 指出）：若详情页真的残留
-//  （上一轮收尾失败/中途被打断），入口坐标 (386,1555) 落在详情页上正是 POWER UP /
-//   EVOLVE 一带，盲点过去可能消耗星尘、甚至把刚收到的宝可梦进化掉——不可逆。
-// 所以：标记成立时间隔 800ms / 2s 共测三次（防瞬时干扰），三次都成立就打印
-// 手动收尾指引后 ExitScript。误报场景下这三行诊断（含命中坐标）正是校准所需。
-// 标记干净（绝大多数轮次第一次就是“无/无”）则零延时直接进交易流程。
-Sub PreEntryGuard()
+// 等好友页就绪（v7.3，检测驱动）：轮询好友页锚点，一出现立即返回 True。
+// 取代了两段固定等待——旧版收尾后的 5 秒盲等、以及开局对详情页的怀疑式预检：
+// 正常轮次页面 1~2 秒就绪，开销接近零；首轮则给手动导航留出宽限。
+// 超时返回 False，由调用方转入“标记三连确认”兜底分支。
+Function WaitFriendPageReady()
+    Dim waitedMs
+    WaitFriendPageReady = False
+    waitedMs = 0
+    Do
+        If FriendAnchorsVisible() Then
+            WaitFriendPageReady = True
+            Exit Function
+        End If
+        Delay 600
+        waitedMs = waitedMs + 600
+        If waitedMs Mod 3000 = 0 Then
+            TracePrint "等待好友页就绪（锚点未现）" & Int(waitedMs / 1000) & "/" & FriendReadyMaxSec & " 秒"
+        End If
+    Loop While waitedMs < FriendReadyMaxSec * 1000
+End Function
+
+// 点完交易入口后：等“好友页锚点消失”= 已切去选宝可梦列表（检测驱动，
+// 取代旧版固定 4 秒盲等；通常 1 秒内切走）。超时返回 False，调用方补点一次入口。
+// 注意走兜底分支进来时锚点本来就不可见（如 BATTLE 变灰），会立即返回 True——
+// 等同旧版盲等后直接继续，后续由 NEXT 流程自动重选/超时兜底。
+Function WaitLeftFriendPage()
+    Dim waitedMs
+    WaitLeftFriendPage = False
+    waitedMs = 0
+    Do
+        If FriendAnchorsVisible() = False Then
+            WaitLeftFriendPage = True
+            Delay 800
+            Exit Function
+        End If
+        Delay 500
+        waitedMs = waitedMs + 500
+    Loop While waitedMs < LeaveFriendMaxSec * 1000
+End Function
+
+// 轮前闸门（v7.3 判定反转）：默认相信“此刻就该在好友页”——首轮是使用要求，
+// 后续轮收尾已验证过“标记消失”——所以不再默认怀疑“详情页没关”，
+// 改为用锚点正向确认：锚点一出现立即放行，且放行是构造性安全的（入口坐标
+// 点的就是刚确认过的 LOCAL TRADE 图标本尊）。
+// 锚点超时才进入怀疑分支（v5~v7.2 的三次误报全发生在旧的怀疑式预检上）：
+// 标记间隔 0.8s/2s 三连确认 —— 三次都成立大概率真有残留详情页，安全退出
+// （防入口坐标盲点 POWER UP / EVOLVE，消耗星尘甚至误进化，不可逆）；
+// 没被三连确认（如好友不在附近 BATTLE 变灰、锚点失效）则告警后照常放行，
+// 点错页面由“等不到 NEXT 超时”安全兜底。全程绝不补点 X（v5/v6 事故教训）。
+Sub PreEntryGate()
+    If WaitFriendPageReady() Then
+        TracePrint "好友页锚点就绪，直接开始本轮"
+        Exit Sub
+    End If
+    TracePrint "锚点超时未出现（好友不在附近 BATTLE 变灰？页面没回来？），转入标记三连确认"
     If ProbeAndLogMarker("轮前") Then
         Delay 800
         If ProbeAndLogMarker("轮前复测1") Then
             Delay 2000
             If ProbeAndLogMarker("轮前复测2") Then
-                TracePrint "开局连续 3 次检测到详情页标记，为安全停止脚本：不补点 X，也不进交易流程（入口坐标会盲点到详情页的 POWER UP / EVOLVE，可能消耗星尘甚至误进化）"
-                TracePrint "屏幕上真有没关的详情页 -> 请手动点 X 关闭后重新运行；此刻屏幕若是好友页 -> 探针误报，请把上面三行标记诊断连同截图发回校准"
+                TracePrint "连续 3 次检测到详情页标记（好友页锚点也不在），为安全停止脚本：不补点 X，也不进交易流程（入口坐标会盲点到详情页的 POWER UP / EVOLVE，可能消耗星尘甚至误进化）"
+                TracePrint "屏幕上真有没关的详情页 -> 请手动点 X 关闭后重新运行；此刻屏幕若是好友页 -> 探针误报且锚点没认出好友页，请把上面三行标记诊断连同截图发回校准"
                 ExitScript
             End If
         End If
     End If
+    TracePrint "未确认出详情页残留，按好友页继续本轮（若随后卡在等 NEXT 超时，说明当前页面不对，会安全退出）"
 End Sub
 
 // 选完宝可梦后：等绿色 NEXT 出现 -> 点 -> 验证页面切走；没切走就限时重点。
@@ -672,9 +833,13 @@ End Function
 Sub OneTrade()
     TracePrint "===== Trade round " & (TradeCount + 1) & " start ====="
 
-    PreEntryGuard()
+    PreEntryGate()
     TapTradeEntry()
-    WaitSeconds ListSettleSec, "list settle"
+    If WaitLeftFriendPage() = False Then
+        TracePrint "点了 LOCAL TRADE 但 " & LeaveFriendMaxSec & " 秒后好友页锚点仍在：可能没点中，补点一次"
+        TapTradeEntry()
+        WaitLeftFriendPage()
+    End If
     TapFirstPokemon()
 
     If SelectAndPressNext() = False Then
@@ -696,7 +861,8 @@ Sub OneTrade()
         ExitScript
     End If
 
-    WaitSeconds ReturnSettleSec, "return settle"
+    // 不再固定缓冲 5 秒回好友页（v7.3）：下一轮开头的“锚点就绪”等待
+    // 就是检测驱动的缓冲，页面一回来立即开始。
 
     TradeCount = TradeCount + 1
     TracePrint "===== Trade round " & TradeCount & " done ====="
