@@ -10,8 +10,10 @@
 //
 // ===== 防误点设计（多轮实测迭代） =====
 // 1. 长条按钮（NEXT / CONFIRM / 橙色 CANCEL / 详情页 POWER UP）要求三重验证：
-//    色点贴左（位置约束）+ 右侧 60~170px 仍是同色（“64”等级数字、金色 +XX 文本只有 ~55px 宽，
-//    过不了 60px 起跳的横向验证）+ 下方 45~90px 仍是同色（文字行没有这个纵向厚度）。
+//    色点贴左（位置约束）+ 右侧 150~280px 仍是同色 + 下方 45~90px 仍是同色。
+//    真按钮都是 340px+ 的长条，轻松通过；好友页“64 LEVEL”两行青色文字宽约 95px、
+//    纵向也有厚度，曾骗过旧的 60px 横向检查、导致开局把好友页误判成详情页并点掉了
+//    好友页的 X（实测翻车）——150px 起跳后它够不着。
 //    候选点验证失败不放弃：从该点下方继续搜索（FindColor 只返回最上面的匹配点，
 //    不续搜的话一个同色杂点就会一直挡住下方的真按钮）。
 // 2. 颜色只按 BGR 一种口径解析。绝不能为“兼容 RGB”同时检测 R/B 互换色：
@@ -208,10 +210,11 @@ Function FindPillIn(x1, y1, x2, y2, spec, maxLeftX)
         okV = False
         tapX = -1
         If candX <= maxLeftX Then
-            // 横向验证：右侧 60~170px 仍是同色。按钮都是 300px+ 的长条；
-            // “64”等级数字、“+4”金色文本这类 ~55px 宽的内容过不了 60px 起跳的检查。
-            hx1 = candX + 60
-            hx2 = candX + 170
+            // 横向验证：右侧 150~280px 仍是同色。真按钮都是 340px+ 的长条；
+            // 好友页“64 LEVEL”两行青色大字宽约 95px（实测骗过了旧的 60px 检查，
+            // 把好友页误判成详情页），“+4”金色文本等更短——150px 起跳后都够不着。
+            hx1 = candX + 150
+            hx2 = candX + 280
             hy2 = candY + 14
             If hx2 > x2 Then
                 hx2 = x2
@@ -336,6 +339,11 @@ Sub PreEntryGuard()
     Dim tries
     tries = 0
     Do While DetailPageOpen()
+        // 防瞬时误判：800ms 后复测仍然成立才动手补点
+        Delay 800
+        If DetailPageOpen() = False Then
+            Exit Do
+        End If
         tries = tries + 1
         If tries > 5 Then
             TracePrint "宝可梦详情页关不掉，为安全停止脚本：请手动关闭后重新运行"
