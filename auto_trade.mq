@@ -24,8 +24,10 @@
 //    GYMS & RAIDS 选中页签的细下划线压在检测带顶上时（实测正是它抢走了候选点，
 //    导致一直点到 385,1874 而真 X 在 485,1949），正下方是白底，一票否决。
 //    左右 130px 以外不允许还有同色，排除 300px+ 的长按钮。
-// 5. X 找不到时的兜底：按实测 X 中心 (485,1949)@960x2079 换算成屏幕百分比 (50.5%, 93.7%)
-//    直接点一次。这是比例坐标，不是写死像素，换其他尺寸的 iPhone 仍然成立。
+// 5. X 找不到时的兜底：x 固定在实测的 50.5%（485/960），高度在 93.5%/90.5%/96%/87.5% 四档轮换点击。
+//    详情页 X 的精确高度从截图只能标定到 ±3%（好友页实测 93.7%，详情页可能略高），
+//    圆钮半径约 2%，四档轮换保证总有一次落进按钮；点空只落在招式行上，无害。
+//    全部是屏幕百分比，不是写死像素，换其他尺寸的 iPhone 仍然成立。
 //
 // ===== 使用方式 =====
 // 从好友资料页开始运行（能看到 SEND GIFT / LOCAL TRADE / REMOTE TRADE 的页面）。
@@ -45,7 +47,7 @@ Dim GreenBtnSpec, OrangeSpec, CloseSpec
 Dim NextX1, NextY1, NextX2, NextY2, NextLeftMaxX
 Dim ConfX1, ConfY1, ConfX2, ConfY2, ConfLeftMaxX
 Dim CloseX1, CloseY1, CloseX2, CloseY2
-Dim CloseFallbackX, CloseFallbackY
+Dim CloseFallbackX
 Dim DetX1, DetY1, DetX2, DetY2, DetLeftMaxX
 Dim FoundX, FoundY
 Dim PillFoundX, PillFoundY, PillTapX, PillTapY
@@ -96,15 +98,15 @@ ConfX2 = Int(ScreenW * 44 / 100)
 ConfY2 = Int(ScreenH * 59 / 100)
 ConfLeftMaxX = Int(ScreenW * 25 / 100)      // 按钮贴左边，色点必须在左 25% 内
 
-// 完成页底部中间的 X：实测中心 (485,1949)@960x2079 = (50.5%, 93.7%)。
-// 带顶 88% 会擦到 GYMS & RAIDS 页签下划线（~88%），由“正下方窄列”验证排除。
+// 完成页底部中间的 X：好友页同款 X 实测中心 (485,1949)@960x2079 = (50.5%, 93.7%)；
+// 详情页的 X 从截图标定有 ±3% 误差（可能在 87%~95% 之间），检测带放宽到 84%~98% 全覆盖。
+// 带内的页签下划线由“正下方窄列”验证排除；EVOLVE 等长按钮底边探进来由“排长条”验证排除。
 CloseX1 = Int(ScreenW * 38 / 100)
-CloseY1 = Int(ScreenH * 88 / 100)
+CloseY1 = Int(ScreenH * 84 / 100)
 CloseX2 = Int(ScreenW * 62 / 100)
 CloseY2 = Int(ScreenH * 98 / 100)
-// 比例兜底点（来自实测 485/960=50.5%、1949/2079=93.7%，非写死像素，可适配其他尺寸 iPhone）
+// 兜底点击的 x（来自实测 485/960=50.5%，比例坐标；高度见 TapCloseFallback 的四档轮换）
 CloseFallbackX = Int(ScreenW * 505 / 1000)
-CloseFallbackY = Int(ScreenH * 937 / 1000)
 
 // “宝可梦详情页开着”的页面标记：左侧 60%~84% 高度的绿色长按钮（POWER UP / EVOLVE / CHANGE FORM）。
 // 好友页同区域只有“64”等级数字（细字，过不了横/纵双重验证）和位置偏右的彩色小图标。
@@ -309,6 +311,24 @@ Sub TapFirstPokemon()
     SafeTap 210, 645, "FIRST POKEMON"
 End Sub
 
+// X 兜底点击：x 固定在实测的 50.5%，高度按 93.5% / 90.5% / 96% / 87.5% 四档轮换。
+// 详情页 X 的精确高度从截图只能标定到 ±3%，圆钮半径约 2%，轮换保证总有一次落进按钮；
+// 点空只会落在招式行/空白上，无害。配合“详情页标记消失才算成功”，点中与否由标记说了算。
+Sub TapCloseFallback(idx)
+    Dim fy, m
+    m = idx Mod 4
+    If m = 0 Then
+        fy = Int(ScreenH * 935 / 1000)
+    ElseIf m = 1 Then
+        fy = Int(ScreenH * 905 / 1000)
+    ElseIf m = 2 Then
+        fy = Int(ScreenH * 960 / 1000)
+    Else
+        fy = Int(ScreenH * 875 / 1000)
+    End If
+    TapPoint CloseFallbackX, fy, "完成页 X（比例兜底档位 " & m & "）"
+End Sub
+
 // 轮前兜底：上一轮的详情页若没关掉（标记还在），先补点 X 关闭，
 // 避免本轮入口坐标 (386,1555) 误点到详情页同位置的 POWER UP / EVOLVE。
 // 在好友页上标记为 False，这里什么都不会点。
@@ -317,7 +337,7 @@ Sub PreEntryGuard()
     tries = 0
     Do While DetailPageOpen()
         tries = tries + 1
-        If tries > 4 Then
+        If tries > 5 Then
             TracePrint "宝可梦详情页关不掉，为安全停止脚本：请手动关闭后重新运行"
             ExitScript
         End If
@@ -325,7 +345,7 @@ Sub PreEntryGuard()
         If FindCloseIn(CloseX1, CloseY1, CloseX2, CloseY2) Then
             TapPoint CloseTapX, CloseTapY, "补点详情页 X"
         Else
-            TapPoint CloseFallbackX, CloseFallbackY, "补点详情页 X（比例兜底）"
+            TapCloseFallback tries
         End If
         Delay 2500
     Loop
@@ -438,14 +458,16 @@ End Function
 
 // 交易动画放完后弹出“收到的宝可梦详情页”。全程以“详情页标记”（POWER UP 长按钮）为准：
 //   标记出现 -> 在底部带找 X 圆钮并点击 -> 标记连续两次消失 = 关闭成功。
-//   标记开着却 12 秒找不到 X 时，按实测比例坐标 (50.5%, 93.7%) 兜底点一次。
+//   标记开着却 8 秒找不到 X 时，启动比例兜底点击（四档高度轮换，见 TapCloseFallback）。
 // 不再用“X 是否还在”验证关闭——好友页底部也有同款 X，那样验证永远过不了（实测踩坑）。
+// 找不到 X 时会打印带内青色原始点坐标，方便对照截图校准颜色/区域。
 Function TapCloseWhenDone()
-    Dim elapsed, sawPage, goneCount, noXElapsed
+    Dim elapsed, sawPage, goneCount, noXElapsed, fbIndex
     elapsed = 0
     sawPage = False
     goneCount = 0
     noXElapsed = 0
+    fbIndex = 0
     TapCloseWhenDone = False
     Do
         If DetailPageOpen() Then
@@ -458,15 +480,21 @@ Function TapCloseWhenDone()
                 elapsed = elapsed + 3
             Else
                 noXElapsed = noXElapsed + 2
-                If noXElapsed >= 12 Then
-                    TapPoint CloseFallbackX, CloseFallbackY, "完成页 X（比例兜底）"
+                If noXElapsed >= 8 Then
+                    TapCloseFallback fbIndex
+                    fbIndex = fbIndex + 1
                     noXElapsed = 0
                     Delay 2000
                     elapsed = elapsed + 3
                 Else
+                    // 校准辅助：报告带内青色原始点（如有），看它和真 X 差在哪
+                    If FindSpecIn(CloseX1, CloseY1, CloseX2, CloseY2, CloseSpec) Then
+                        TracePrint "X 未识别；带内青色原始点 @ " & FoundX & "," & FoundY & "（未通过圆钮验证）"
+                    Else
+                        TracePrint "X 未识别；检测带内没有任何青色点（颜色/区域需校准）"
+                    End If
                     Delay 1200
                     elapsed = elapsed + 2
-                    TracePrint "详情页已出现，等待识别底部 X " & elapsed & "/" & WaitCompleteMaxSec & " 秒"
                 End If
             End If
         Else
