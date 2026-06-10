@@ -1,6 +1,6 @@
 // Pokemon GO 自动交易脚本（按键精灵手机助手 / iPhone 13 Pro, iOS 16.3, 竖屏）
 // =====================================================================
-// 版本：v7.3（2026-06-10）
+// 版本：v7.4（2026-06-10）
 // 启动日志第一行会打印本版本号——每次测试前先核对日志里的版本，避免误测旧版（出过一次）。
 // 版本历史：
 //   v1  逐像素 GetPixelColor 扫描慢到等于卡死 -> 改原生 FindColor 区域找色
@@ -34,6 +34,9 @@
 //        告警后放行，由 NEXT 超时兜底）。固定等待替换：点入口后 4 秒盲等 ->
 //        “锚点消失=已切页”检测（没切走自动补点入口）；收尾后 5 秒盲等 -> 删除，
 //        并入下轮开头的“锚点就绪”检测；删 WaitSeconds 及其逐秒刷屏日志。
+//   v7.4 修好友页锚点漏判：当前好友页 LOCAL TRADE / BATTLE 图标比长条按钮更偏蓝，
+//        复用 GreenBtnSpec 会漏识别；改为专用 FriendIconSpec（CloseSpec 青色盒），
+//        并把图标行高度窗从 74.5%~78.8% 放宽到 73.5%~80.5%。
 // =====================================================================
 //
 // ===== 核心思路 =====
@@ -101,7 +104,7 @@ Dim MaxTrades, TradeCount
 Dim StepDelayMs
 Dim FriendReadyMaxSec, LeaveFriendMaxSec, SelectRetryIntervalSec, WaitNextMaxSec, NextRetryMaxSec
 Dim WaitPartnerSelectSec, WaitPartnerConfirmSec, WaitCompleteMaxSec
-Dim GreenBtnSpec, OrangeSpec, CloseSpec, WhiteCardSpec
+Dim GreenBtnSpec, OrangeSpec, CloseSpec, WhiteCardSpec, FriendIconSpec
 Dim NextX1, NextY1, NextX2, NextY2, NextLeftMaxX
 Dim ConfX1, ConfY1, ConfX2, ConfY2, ConfLeftMaxX
 Dim CloseX1, CloseY1, CloseX2, CloseY2
@@ -115,7 +118,7 @@ Dim CloseFoundX, CloseFoundY, CloseTapX, CloseTapY
 Dim CardFoundX, CardFoundY
 Dim ScriptVersion
 
-ScriptVersion = "v7.3"        // 与文件头版本号保持一致；启动日志会打印，测试前先核对
+ScriptVersion = "v7.4"        // 与文件头版本号保持一致；启动日志会打印，测试前先核对
 BaseW = 960
 BaseH = 2079
 ScreenW = GetScreenX()
@@ -140,9 +143,9 @@ StepDelayMs = 1500            // 坐标点击后的固定缓冲
 // 绿色长条按钮（NEXT / CONFIRM / POWER UP 等）：PoGo 按钮是黄绿到青绿渐变。
 // 容差盒：R 60~170, G 168~242, B 40~200。排除白色文字、浅蓝天空、灰蓝 WAITING 角标、
 // 深青色界面文字（“64”等级、VIEW TRADE 等文字 G<168 进不来）。
-// 注意：好友页功能行的青色图标（SEND GIFT / LOCAL TRADE / BATTLE 等）也落在这个
-// 容差盒内（v7.1 实测），靠 FindPillIn 的“实心连续”验证与好友页锚点区分，
-// 同时 FriendAnchorsVisible 反过来用它定位这排图标。
+// 注意：部分好友页功能行青色图标（SEND GIFT / LOCAL TRADE / BATTLE 等）也可能落在这个
+// 容差盒内（v7.1 实测），靠 FindPillIn 的“实心连续”验证排除；v7.4 起
+// FriendAnchorsVisible 不再复用它找好友图标，改用 FriendIconSpec 防止偏蓝图标漏检。
 GreenBtnSpec = "78CD73-502537"
 // 橙色 CANCEL 长条按钮（BGR）。只能用 BGR 一种写法，见头部说明第 2 条。
 OrangeSpec = "3BA3F2-304040"
@@ -150,6 +153,11 @@ OrangeSpec = "3BA3F2-304040"
 // 以实测 X 笔画取色 RGB(96,205,176)（工具显示 B0CD60）为锚点放宽；
 // 长按钮已被检测带（88% 起）排除在外，不再靠压低 G 上限去区分。
 CloseSpec = "A5B455-3C3046"
+// 好友页功能图标的青绿色。不要复用 GreenBtnSpec：当前实测好友页 LOCAL TRADE / BATTLE
+// 图标比长条按钮更偏蓝，B 通道会超出 GreenBtnSpec 上限，导致明明在好友页却锚点不成立。
+// CloseSpec 本来就是按 PoGo 青色 X / 界面青绿色放宽的 BGR 盒，用作好友图标更稳；
+// 仍要配合 LOCAL+BATTLE+间隙净空三个几何条件，避免把详情页按钮/白卡误认成好友页。
+FriendIconSpec = CloseSpec
 // 详情页白色大卡片探针（详情页标记的并联条件，不依赖任何按钮）：接近纯白。
 // v7 起必须配合“纵向白色长列”验证使用（见 DetailCardVisible），单点白色不算数。
 WhiteCardSpec = "FAFAFA-080808"
@@ -204,13 +212,13 @@ CardY2 = Int(ScreenH * 56 / 100)
 
 // 好友页锚点窗（v7.2，页面标记的一票否决）：好友资料页中部功能行的 LOCAL TRADE 与
 // BATTLE 两枚青色图标。两种好友页样式（白底/场景背景）下这一行都画在白色面板上、
-// 位置固定：图标行实测高度约 74.5%~78.8%（图标顶 ~73.9%、高 ~5%），LOCAL TRADE 约
+// 位置固定：图标行实测高度约 74%~79%（v7.4 检测窗放宽到 73.5%~80.5%），LOCAL TRADE 约
 // 35%~43%，BATTLE 约 81%~86%（右缘收在 86% 内，避开 x≥87% 的 LiveFeed 悬浮窗）。
 // 两图标之间 46%~55% 必须净空（无同色），排除横贯整行的长条色块。
 // 详情页上按钮最宽到 ~42%，BATTLE 窗位置是白卡内容区，绝不会出现青绿色，
 // 所以锚点在详情页上恒为不成立——用作否决是安全的（见 FriendAnchorsVisible）。
-FriIconY1 = Int(ScreenH * 745 / 1000)
-FriIconY2 = Int(ScreenH * 788 / 1000)
+FriIconY1 = Int(ScreenH * 735 / 1000)
+FriIconY2 = Int(ScreenH * 805 / 1000)
 FriLtX1 = Int(ScreenW * 35 / 100)
 FriLtX2 = Int(ScreenW * 43 / 100)
 FriBtX1 = Int(ScreenW * 81 / 100)
@@ -456,22 +464,22 @@ Function DetailCardVisible()
     DetailCardVisible = True
 End Function
 
-// 好友页锚点定位（v7.2）：LOCAL TRADE 图标窗有青绿色 + BATTLE 图标窗有青绿色 +
+// 好友页锚点定位：LOCAL TRADE 图标窗有青绿色 + BATTLE 图标窗有青绿色 +
 // 两窗之间净空，三个条件同时成立 = 确认当前站在好友资料页。
-// 用 GreenBtnSpec 检测——v7.1 实测好友页这排图标的青绿色恰好落在这个容差盒内
-// （当时正是它们骗过了绿长钮探针），现在反过来拿它们当好友页的指纹。
-// 间隙净空排除“横贯整行的长条色块”同时点亮两窗的情况。
+// v7.4 改用 FriendIconSpec（CloseSpec 同款放宽青色）检测图标，而不是 GreenBtnSpec：
+// 实测当前好友页图标更偏蓝，GreenBtnSpec 会漏掉 LOCAL TRADE / BATTLE，造成“明明
+// 一开始就在好友界面却显示不在”。间隙净空排除“横贯整行的长条色块”同时点亮两窗的情况。
 // 已知边界：BATTLE 图标在好友不在附近时会变灰，锚点会不成立——后果只是退回 v7.1
 // 的行为（误报时三连确认后安全退出），不会引入新的误动作。
 Function FriendAnchorsVisible()
     FriendAnchorsVisible = False
-    If FindSpecIn(FriLtX1, FriIconY1, FriLtX2, FriIconY2, GreenBtnSpec) = False Then
+    If FindSpecIn(FriLtX1, FriIconY1, FriLtX2, FriIconY2, FriendIconSpec) = False Then
         Exit Function
     End If
-    If FindSpecIn(FriBtX1, FriIconY1, FriBtX2, FriIconY2, GreenBtnSpec) = False Then
+    If FindSpecIn(FriBtX1, FriIconY1, FriBtX2, FriIconY2, FriendIconSpec) = False Then
         Exit Function
     End If
-    If FindSpecIn(FriGapX1, FriIconY1, FriGapX2, FriIconY2, GreenBtnSpec) Then
+    If FindSpecIn(FriGapX1, FriIconY1, FriGapX2, FriIconY2, FriendIconSpec) Then
         Exit Function
     End If
     FriendAnchorsVisible = True
