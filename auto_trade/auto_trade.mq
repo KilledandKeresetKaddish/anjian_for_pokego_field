@@ -1,6 +1,6 @@
 // Pokemon GO 自动交易脚本（按键精灵手机助手 / iPhone 13 Pro, iOS 16.3, 竖屏）
 // =====================================================================
-// 版本：v7.9（2026-06-11）
+// 版本：v7.10（2026-06-10）
 // 启动日志第一行会打印本版本号——每次测试前先核对日志里的版本，避免误测旧版（出过一次）。
 // 版本历史：
 //   v1  逐像素 GetPixelColor 扫描慢到等于卡死 -> 改原生 FindColor 区域找色
@@ -141,6 +141,32 @@
 //        左缘（~17%）；② 确认页上被交易宝可梦的模型居中悬浮在 ~53%~73% 高度，
 //        够不到 NEXT 检测带（80%~91%）——v7.8 注释里“模型伸进带内 86%+”的说法
 //        实为列表缩略图，已更正。
+//   v7.10 修“收尾在收到的宝可梦详情页上零动作，等满 150 秒后退出”（第十五轮：
+//        13 Pro 收到 Scatterbug 后卡死不点 X；同一笔交易里 14 Pro Max 收 Beldum
+//        正常收尾。两张原生截图对照标定出的事故链：Scatterbug 详情页资源栏只有
+//        一行三格（星尘/糖果/糖果XL），POWER UP 行被抬高进 73.5%~78.8% 的好友页
+//        图标行检测带——LT 窗（35%~43%）撞上按钮绿身点亮，BT 窗（81%~86%）撞上
+//        强化成本行的糖果球图标：深灰球身/灰旋纹的抗锯齿灰正落在宽谱 CloseSpec
+//        的 132~155 中性灰漏洞里（与 v7.6 mega 成本行灰字同族），BT 窗也被点亮；
+//        间隙窗 46%~54% 是按钮右缘外的白卡（净空成立）——好友页锚点在详情页上
+//        成立，把“详情页标记”一票否决，TapCloseWhenDone 等不到标记、一次点击都
+//        不发生，直到 150 秒超时安全退出。Beldum 页因多一行 mega 能量（2×2 四格
+//        资源栏），按钮区整体被压低、成本行落在检测带下方，BT 窗空白、锚点不成立，
+//        所以 14 Pro Max 同款流程不受影响。绿长钮硬安全闸没拦住的原因待实测复核：
+//        渐变左半段偏青（R<60 出 GreenBtnSpec 盒）会让候选点右移，若首个入盒点
+//        越过 DetLeftMaxX=25% 则四重验证拿不到候选，闸与绿探针同时失效，标记只
+//        剩白卡列一条腿、恰好被锚点否决吞掉）。两处修：
+//        ① 锚点 LT/BT 图标窗的并集换“灰进不了盒”的口径：宽青 CloseSpec ->
+//           饱和青 XSolidSpec（G≥178 且 R≤142，任何 R=G=B 中性灰在数学上进不来；
+//           旧扁平青图标的锚点色 RGB(96,205,176) 在盒内居中不漏；插画图标本就靠
+//           绿/蓝两谱）。全部现成色谱零新增标定，CloseSpec 本体一字不动——它还在
+//           间隙净空窗用（间隙保持宽谱并集：间隙变脏只会拦锚点，方向安全）。
+//           锚点将来漏认的代价仍是 v7.5 设计的良性降级：多等 10 秒 + 告警放行，
+//           无任何误点击。
+//        ② 完成页等待加探针诊断：等“详情页标记”超过约半分钟（动画正常 ~30 秒）
+//           即周期打印标记诊断 + 锚点分解；150 秒超时退出前也打一次——此前这条
+//           超时路径是全脚本唯一没有探针诊断的失败出口（弹窗卡死/收尾卡死都有），
+//           这次只能靠静态对照截图定位，下次一行日志即可。
 // =====================================================================
 //
 // ===== 核心思路 =====
@@ -185,6 +211,11 @@
 //    锚点假阴 -> 白卡列三连确认 -> 在真好友页上误停整轮。图标窗找色改为三色谱并集
 //    （见 IconSpecHitIn），并给锚点加“检测带内有实心绿长钮 = 否决”的硬安全闸，
 //    色谱放宽不以牺牲“锚点在(可点按钮的)详情页恒不成立”为代价。
+//    v7.10 教训：上一条的不变量还是被打穿了——矮布局详情页（资源栏一行三格）的
+//    POWER UP 行抬进图标行检测带，LT 窗吃到按钮绿身、BT 窗吃到成本行糖果球的
+//    抗锯齿灰（宽青 CloseSpec 的 132~155 中性灰漏洞），锚点在详情页误成立、
+//    把标记一票否决，收尾零动作超时。LT/BT 图标窗并集换饱和青 XSolidSpec
+//    （见 IconSolidSpecHitIn），间隙净空窗保持宽谱不动。
 // 4. 完成页 X 的圆钮判定：候选点只认饱和青 XSolidSpec（G≥178 且 R≤142，中性灰在
 //    数学上进不来——v7.6 前用宽谱 CloseSpec，它含 132~155 的中性灰即文字抗锯齿色，
 //    mega 区“能量糖×200”成本行的灰字通过了全部验证、把可点的 MEGA EVOLVE 行当 X
@@ -268,7 +299,7 @@ Dim ProbeSawGreen
 Dim ConfRejectLogged
 Dim NextRejectLogged
 
-ScriptVersion = "v7.9"        // 与文件头版本号保持一致；启动日志会打印，测试前先核对
+ScriptVersion = "v7.10"       // 与文件头版本号保持一致；启动日志会打印，测试前先核对
 BaseW = 960
 BaseH = 2079
 ScreenW = GetScreenX()
@@ -304,9 +335,11 @@ OrangeSpec = "3BA3F2-304040"
 // PoGo 青色宽谱（BGR）：R 15~155, G 132~228, B 105~225。
 // 以实测 X 笔画取色 RGB(96,205,176)（工具显示 B0CD60）为锚点放宽。
 // v7.6 起不再用于找 X（G 下限 132 + R 上限 155 会把 132~155 的中性灰整段放进来，
-// 文字抗锯齿/蒙黑画面全是这种灰，实测在 mega 区翻车，见 XSolidSpec 注释），
-// 现仅用于：好友页锚点的三色谱并集（v7.5 标定，覆盖旧青色图标和插画的青蓝过渡色，
-// 保持不动）和 X 未识别时的宽谱诊断行。
+// 文字抗锯齿/蒙黑画面全是这种灰，实测在 mega 区翻车，见 XSolidSpec 注释）；
+// v7.10 起也退出锚点 LT/BT 图标窗（同一个中性灰漏洞：矮布局详情页成本行的糖果球
+// 灰像素点亮 BT 窗，锚点在详情页误成立、否决页面标记，收尾零动作超时，第十五轮）。
+// 现仅用于：好友页锚点的间隙净空窗（v7.5 标定保持不动；间隙变脏只会拦锚点，
+// 方向安全）、锚点分解日志的对照列和 X 未识别时的宽谱诊断行。
 CloseSpec = "A5B455-3C3046"
 // 完成页 X 圆钮本体的饱和青色（v7.6，BGR）：R 20~142, G 178~232, B 130~224。
 // 实测 X 笔画锚点 RGB(96,205,176) 仍居中。要点：G 下限 178 高于 R 上限 142，
@@ -314,10 +347,13 @@ CloseSpec = "A5B455-3C3046"
 // 旧宽谱正是被这类灰骗过：mega 区“能量糖×200”成本行灰字被认成 X 候选点 + 窄列，
 // 点中可点的 MEGA EVOLVE 行弹出进化确认框；弹窗蒙黑后整片 ~140 的暗灰又持续命中
 // 宽谱（实测日志原始点恒为检测带左上角 364,1746）。
-// 本谱只给 FindCloseIn（X 找点 + 圆钮验证）和 X 诊断用；好友页锚点不用它。
+// 本谱给 FindCloseIn（X 找点 + 圆钮验证）、X 诊断用；v7.10 起也是好友页锚点
+// LT/BT 图标窗并集的青色腿（替换宽青 CloseSpec 防中性灰，见 IconSolidSpecHitIn；
+// 旧扁平青图标的锚点色 RGB(96,205,176) 在本盒内居中，覆盖不缩水）。
 XSolidSpec = "B1CD51-2F1B3D"
 // 好友页 LOCAL TRADE 插画图标里的饱和蓝（手机机身）：B 179~255, G 112~192, R 30~110。
-// 只给好友页锚点的三色谱并集用（见 IconSpecHitIn）。排除项：白色/浅灰（G、R 超上限）、
+// 只给好友页锚点的并集用（图标窗 IconSolidSpecHitIn / 间隙窗 IconSpecHitIn）。
+// 排除项：白色/浅灰（G、R 超上限）、
 // 中性灰文字（R>110 或 G<112 进不来）、淡天空蓝（G 超上限）、深蓝队徽背景（B<179）。
 // 详情页上的饱和蓝只可能是水系糖果图标等零星元素，且锚点还需 BATTLE 窗与绿长钮
 // 硬安全闸同时放行，单点蓝色不会让锚点在详情页成立。
@@ -414,6 +450,14 @@ CardY2 = Int(ScreenH * 56 / 100)
 // 安全边。详情页上按钮最宽到 ~42%，BATTLE 窗位置是白卡内容区，不会出现成片的
 // 青绿/饱和蓝；即便将来出现零星同色文字，锚点还有“绿长钮硬安全闸”兜底
 //（见 FriendAnchorsVisible），可点按钮的详情页恒被否决。
+// v7.10 更正：上一段“BT 窗在详情页恒为空”在矮布局详情页上不成立——资源栏只有
+// 一行三格（星尘/糖果/糖果XL，无 mega 能量行）时 POWER UP 行被抬进本检测带，
+// 其强化成本行的糖果球图标（实测 13 Pro 收 Scatterbug，球心 ~81%~85% 宽度）正好
+// 站进 BT 窗，深灰球身/灰旋纹的抗锯齿灰落在宽谱 CloseSpec 的中性灰漏洞里点亮了
+// 窗口；LT 窗同高处则是按钮绿身。多一行 mega 能量的页面（如 Beldum）按钮区被
+// 压低 ~5%，成本行落带外，BT 窗仍空——这正是“13 Pro 卡死、14 Pro Max 同笔交易
+// 正常”的成因。所以 LT/BT 图标窗自 v7.10 起用 IconSolidSpecHitIn（绿/饱和青/蓝，
+// 灰进不了任何一谱）；间隙净空窗维持宽谱 IconSpecHitIn 不动。
 FriIconY1 = Int(ScreenH * 735 / 1000)
 FriIconY2 = Int(ScreenH * 788 / 1000)
 FriLtX1 = Int(ScreenW * 35 / 100)
@@ -797,7 +841,9 @@ End Function
 //   GreenBtnSpec  覆盖黄绿~青绿（旧青色图标 / BATTLE 绿场景）
 //   CloseSpec     覆盖 PoGo 青色（旧青色图标 / 插画中的青蓝过渡色）
 //   FriendBlueSpec 覆盖饱和蓝（LOCAL TRADE 蓝手机机身）
-// 间隙窗复用本函数：三谱都无命中才算净空，口径一致。
+// v7.10 起本函数只剩“间隙净空窗”一个使用方（宽谱口径保持 v7.5 不动：间隙变脏
+// 只会拦锚点，方向安全）；LT/BT 图标窗改用下面的 IconSolidSpecHitIn——CloseSpec
+// 的 132~155 中性灰漏洞会把详情页成本行糖果球的抗锯齿灰当成“图标在场”（第十五轮）。
 Function IconSpecHitIn(x1, y1, x2, y2)
     IconSpecHitIn = True
     If FindSpecIn(x1, y1, x2, y2, GreenBtnSpec) Then
@@ -812,10 +858,33 @@ Function IconSpecHitIn(x1, y1, x2, y2)
     IconSpecHitIn = False
 End Function
 
+// 图标窗找色·灰不进盒版（v7.10，LT/BT 窗专用）：绿 / 饱和青 / 蓝并集。
+// 与 IconSpecHitIn 的唯一区别是青色腿用 XSolidSpec（G≥178 且 R≤142）替换宽谱
+// CloseSpec：任何 R=G=B 的中性灰在数学上进不了三个盒中的任何一个，文字/图标
+// 抗锯齿灰整类排除。覆盖不缩水：旧扁平青图标锚点色 RGB(96,205,176) 在 XSolidSpec
+// 居中；插画图标（蓝手机/绿场景）本就靠绿/蓝两谱命中；CloseSpec 相对饱和青多出
+// 的只有“弱青 + 中性灰”，后者正是第十五轮在详情页 BT 窗误成立的元凶。
+// 若将来真出现只有弱青色的新图标样式，代价是 v7.5 设计的良性降级（锚点漏认 ->
+// 多等 10 秒 + 告警放行，无误点击），锚点分解日志的“宽青”对照列可直接定位。
+Function IconSolidSpecHitIn(x1, y1, x2, y2)
+    IconSolidSpecHitIn = True
+    If FindSpecIn(x1, y1, x2, y2, GreenBtnSpec) Then
+        Exit Function
+    End If
+    If FindSpecIn(x1, y1, x2, y2, XSolidSpec) Then
+        Exit Function
+    End If
+    If FindSpecIn(x1, y1, x2, y2, FriendBlueSpec) Then
+        Exit Function
+    End If
+    IconSolidSpecHitIn = False
+End Function
+
 // 好友页锚点定位（v7.2 加，v7.5 重写）：LOCAL TRADE 图标窗有图标色 + BATTLE 图标窗
 // 有图标色 + 两窗之间净空 + 检测带内没有实心绿色长按钮，四个条件同时成立 =
 // 确认当前站在好友资料页。
-// 图标色用三色谱并集（见 IconSpecHitIn），同时覆盖旧扁平青色图标和新插画图标。
+// 图标色用三色谱并集（v7.10 起图标窗为 绿/饱青/蓝，见 IconSolidSpecHitIn），
+// 同时覆盖旧扁平青色图标和新插画图标。
 // 间隙净空排除“横贯整行的长条色块”同时点亮两窗的情况。
 // 绿长钮硬安全闸（v7.5 新增）：色谱放宽后，理论上详情页白卡上的零星同色文字有
 // 一点点概率同时点亮两窗+间隙恰好净空；但“通过实心五连窗验证的绿色长按钮”在
@@ -825,12 +894,15 @@ End Function
 // 而那种页面上盲点入口坐标也只是点在灰按钮上无副作用，仍由 NEXT 超时安全兜底。
 // 已知边界：BATTLE 图标在好友不在附近时会变灰，锚点会不成立——后果是走轮前
 // 三连确认分支（v7.5 起只有白卡列时告警放行，不再整轮硬停）。
+// v7.10：LT/BT 图标窗换 IconSolidSpecHitIn（灰不进盒），修“矮布局详情页上锚点
+// 误成立、一票否决吞掉真详情页标记”（第十五轮，13 Pro 收 Scatterbug 收尾零动作）；
+// 间隙净空窗保持宽谱 IconSpecHitIn（间隙变脏只拦锚点，方向安全，不动 v7.5 标定）。
 Function FriendAnchorsVisible()
     FriendAnchorsVisible = False
-    If IconSpecHitIn(FriLtX1, FriIconY1, FriLtX2, FriIconY2) = False Then
+    If IconSolidSpecHitIn(FriLtX1, FriIconY1, FriLtX2, FriIconY2) = False Then
         Exit Function
     End If
-    If IconSpecHitIn(FriBtX1, FriIconY1, FriBtX2, FriIconY2) = False Then
+    If IconSolidSpecHitIn(FriBtX1, FriIconY1, FriBtX2, FriIconY2) = False Then
         Exit Function
     End If
     If IconSpecHitIn(FriGapX1, FriIconY1, FriGapX2, FriIconY2) Then
@@ -842,7 +914,9 @@ Function FriendAnchorsVisible()
     FriendAnchorsVisible = True
 End Function
 
-// 单个图标窗的逐色谱诊断文本：绿/青/蓝各自“1(坐标)”或“0”。
+// 单个图标窗的逐色谱诊断文本：绿/宽青/饱青/蓝各自“1(坐标)”或“0”。
+// v7.10：图标窗判定只认 绿/饱青/蓝（IconSolidSpecHitIn）；宽青列保留作对照——
+// “宽青1 而饱青0”就是中性灰/弱青在窗里（第十五轮糖果球灰的指纹），一行可定位。
 Function DescribeIconWindow(x1, y1, x2, y2)
     Dim s
     s = ""
@@ -852,9 +926,14 @@ Function DescribeIconWindow(x1, y1, x2, y2)
         s = s & "绿0"
     End If
     If FindSpecIn(x1, y1, x2, y2, CloseSpec) Then
-        s = s & " 青1(" & FoundX & "," & FoundY & ")"
+        s = s & " 宽青1(" & FoundX & "," & FoundY & ")"
     Else
-        s = s & " 青0"
+        s = s & " 宽青0"
+    End If
+    If FindSpecIn(x1, y1, x2, y2, XSolidSpec) Then
+        s = s & " 饱青1(" & FoundX & "," & FoundY & ")"
+    Else
+        s = s & " 饱青0"
     End If
     If FindSpecIn(x1, y1, x2, y2, FriendBlueSpec) Then
         s = s & " 蓝1(" & FoundX & "," & FoundY & ")"
@@ -878,7 +957,7 @@ Sub LogAnchorDiag()
     Else
         msg = msg & " 绿长钮闸[无]"
     End If
-    TracePrint msg & "（成立需要：LT、BT 各至少一个1，间隙全0，绿长钮闸=无）"
+    TracePrint msg & "（成立需要：LT、BT 各有 绿/饱青/蓝 至少一个1（宽青列仅对照，v7.10 起不算图标），间隙 绿/宽青/蓝 全0，绿长钮闸=无）"
 End Sub
 
 // 宝可梦详情页是否开着：左侧贴左的绿色长按钮（POWER UP / EVOLVE / CHANGE FORM）
@@ -1272,7 +1351,7 @@ End Function
 // 不再用“X 是否还在”验证关闭——好友页底部也有同款 X，那样验证永远过不了（实测踩坑）。
 // 找不到 X 时会打印带内原始点坐标（饱和青/宽谱分开报），方便对照截图校准颜色/区域。
 Function TapCloseWhenDone()
-    Dim elapsed, sawPage, goneCount, noXElapsed, fbIndex, finderTaps, tappedX, dlgTries
+    Dim elapsed, sawPage, goneCount, noXElapsed, fbIndex, finderTaps, tappedX, dlgTries, nextDiagAt
     elapsed = 0
     sawPage = False
     goneCount = 0
@@ -1280,6 +1359,10 @@ Function TapCloseWhenDone()
     fbIndex = 0
     finderTaps = 0
     dlgTries = 0
+    // v7.10：标记超过 60 计数（约 36 实秒，动画正常 ~30 秒）仍未出现就开始周期
+    // 打探针诊断（之后每 +24 计数一次）——第十五轮“锚点在详情页误成立否决标记、
+    // 收尾零动作”这类故障，等待期一行诊断就能看出哪个探针/哪个窗在说谎。
+    nextDiagAt = 60
     TapCloseWhenDone = False
     Do
         If DetailPageOpen() Then
@@ -1361,10 +1444,21 @@ Function TapCloseWhenDone()
                 Delay 1200
                 elapsed = elapsed + 2
                 TracePrint "等待交易动画结束、收到宝可梦的详情页出现 " & elapsed & "/" & WaitCompleteMaxSec & " 秒"
+                If elapsed >= nextDiagAt Then
+                    nextDiagAt = nextDiagAt + 24
+                    TracePrint "详情页标记迟迟未成立（动画正常约半分钟），打探针 + 锚点诊断定位（v7.10）："
+                    ProbeAndLogMarker "等待完成页"
+                    LogAnchorDiag()
+                End If
             End If
         End If
     Loop While elapsed < WaitCompleteMaxSec
     TracePrint "完成页处理超时（" & WaitCompleteMaxSec & " 秒）"
+    If sawPage = False Then
+        TracePrint "整个收尾期间“详情页标记”从未成立——要么动画/弹窗异常，要么探针漏检，要么好友页锚点在详情页上误成立把标记一票否决（第十五轮事故型），对照下面诊断与当前屏幕截图即可定位："
+    End If
+    ProbeAndLogMarker "完成超时"
+    LogAnchorDiag()
 End Function
 
 // ===================== 单轮流程 =====================
