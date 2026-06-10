@@ -18,10 +18,11 @@
 //    不续搜的话一个同色杂点就会一直挡住下方的真按钮）。
 // 2. 颜色只按 BGR 一种口径解析。绝不能为“兼容 RGB”同时检测 R/B 互换色：
 //    橙色互换后就是蓝色，交易页大面积蓝背景会整页误中（实测翻车，已删除）。
-// 3. “宝可梦详情页是否开着”用 POWER UP / EVOLVE / CHANGE FORM 绿色长按钮做页面标记：
-//    交易完成后的收尾全部以这个标记为准——标记在才找 X、标记消失才算关闭成功。
-//    之前用“X 还在不在”做验证是错的：好友页底部也有一颗同款 X（实测就在同一位置），
-//    永远验证不过。现在好友页上这个标记为 False，根本不会去碰任何 X。
+// 3. “宝可梦详情页是否开着”用双探针做页面标记：左侧 POWER UP / EVOLVE / CHANGE FORM
+//    绿色长按钮，或右侧 74%~86% 的纯白大卡片（按钮可能因星尘/糖果不足变灰、满级消失，
+//    白卡不依赖按钮状态）。交易完成后的收尾全部以这个标记为准——标记在才找 X、
+//    标记消失才算关闭成功。之前用“X 还在不在”做验证是错的：好友页底部也有一颗同款 X
+//    （实测就在同一位置），永远验证不过。两个探针在好友页上都为 False，不会去碰任何 X。
 // 4. 完成页 X 的圆钮判定：候选点正下方窄列 25~85px 必须仍是同色（X 是实心青色圆钮）。
 //    GYMS & RAIDS 选中页签的细下划线压在检测带顶上时（实测正是它抢走了候选点，
 //    导致一直点到 385,1874 而真 X 在 485,1949），正下方是白底，一票否决。
@@ -45,12 +46,13 @@ Dim MaxTrades, TradeCount
 Dim StepDelayMs
 Dim ListSettleSec, SelectRetryIntervalSec, WaitNextMaxSec, NextRetryMaxSec
 Dim WaitPartnerSelectSec, WaitPartnerConfirmSec, WaitCompleteMaxSec, ReturnSettleSec
-Dim GreenBtnSpec, OrangeSpec, CloseSpec
+Dim GreenBtnSpec, OrangeSpec, CloseSpec, WhiteCardSpec
 Dim NextX1, NextY1, NextX2, NextY2, NextLeftMaxX
 Dim ConfX1, ConfY1, ConfX2, ConfY2, ConfLeftMaxX
 Dim CloseX1, CloseY1, CloseX2, CloseY2
 Dim CloseFallbackX
 Dim DetX1, DetY1, DetX2, DetY2, DetLeftMaxX
+Dim CardX1, CardY1, CardX2, CardY2
 Dim FoundX, FoundY
 Dim PillFoundX, PillFoundY, PillTapX, PillTapY
 Dim CloseFoundX, CloseFoundY, CloseTapX, CloseTapY
@@ -83,6 +85,8 @@ OrangeSpec = "3BA3F2-304040"
 // 以实测 X 笔画取色 RGB(96,205,176)（工具显示 B0CD60）为锚点放宽；
 // 长按钮已被检测带（88% 起）排除在外，不再靠压低 G 上限去区分。
 CloseSpec = "A5B455-3C3046"
+// 详情页白色大卡片探针（详情页标记的并联条件，不依赖任何按钮）：接近纯白。
+WhiteCardSpec = "FAFAFA-080808"
 
 // ===================== 检测区域（按屏幕百分比，分辨率无关） =====================
 // NEXT：底部中间长条（实测约在高度 82%~88%、宽度 20%~77%）。
@@ -117,6 +121,14 @@ DetY1 = Int(ScreenH * 60 / 100)
 DetX2 = Int(ScreenW * 50 / 100)
 DetY2 = Int(ScreenH * 84 / 100)
 DetLeftMaxX = Int(ScreenW * 25 / 100)
+
+// 详情页标记的兜底探针：右侧 74%~86%、高度 48%~56% 的纯白大卡片。
+// 详情页这里永远是白色卡片（POWER UP 变灰/满级没有绿按钮也不受影响）；
+// 好友页同位置是天空蓝背景，不会误报。x 上限 86% 避开右缘 LiveFeed 悬浮窗（x≥87%）。
+CardX1 = Int(ScreenW * 74 / 100)
+CardY1 = Int(ScreenH * 48 / 100)
+CardX2 = Int(ScreenW * 86 / 100)
+CardY2 = Int(ScreenH * 56 / 100)
 
 TradeCount = 0
 FoundX = -1
@@ -296,11 +308,33 @@ Function OrangePillVisible()
     OrangePillVisible = FindPillIn(ConfX1, ConfY1, ConfX2, ConfY2, OrangeSpec, ConfLeftMaxX)
 End Function
 
-// 宝可梦详情页是否开着：左侧中下部有贴左的绿色长按钮（POWER UP / EVOLVE / CHANGE FORM）。
-// 这是交易完成收尾阶段的唯一“真相来源”：标记在 = 详情页没关；标记消失 = 已回到好友页。
+// 详情页标记的兜底探针：右侧大白卡。白色点 + 下方 40~90px 仍是白色（卡片是大面积纯白；
+// 好友页同位置是天空蓝，连第一个白点都找不到；交易页中间的白色虚线太细，过不了纵向延续）。
+Function DetailCardVisible()
+    DetailCardVisible = False
+    If FindSpecIn(CardX1, CardY1, CardX2, CardY2, WhiteCardSpec) = False Then
+        Exit Function
+    End If
+    If FindSpecIn(FoundX - 12, FoundY + 40, FoundX + 24, FoundY + 90, WhiteCardSpec) = False Then
+        Exit Function
+    End If
+    DetailCardVisible = True
+End Function
+
+// 宝可梦详情页是否开着：左侧贴左的绿色长按钮（POWER UP / EVOLVE / CHANGE FORM）
+// 或右侧大白卡探针，二者有一即可。只看绿按钮是不够的——POWER UP 会因星尘/糖果不足
+// 变灰、满级宝可梦可能没有任何绿色按钮（codex review 指出的边界），白卡不依赖按钮状态。
+// 两个探针在好友页上都为 False，关闭验证依旧可靠。
 // 不再用“X 还在不在”判断——好友页底部也有同款 X，会永远误判。
 Function DetailPageOpen()
-    DetailPageOpen = FindPillIn(DetX1, DetY1, DetX2, DetY2, GreenBtnSpec, DetLeftMaxX)
+    DetailPageOpen = True
+    If FindPillIn(DetX1, DetY1, DetX2, DetY2, GreenBtnSpec, DetLeftMaxX) Then
+        Exit Function
+    End If
+    If DetailCardVisible() Then
+        Exit Function
+    End If
+    DetailPageOpen = False
 End Function
 
 // ===================== 页面动作 =====================
