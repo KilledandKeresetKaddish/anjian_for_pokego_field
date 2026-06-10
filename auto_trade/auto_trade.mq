@@ -1,6 +1,6 @@
 // Pokemon GO 自动交易脚本（按键精灵手机助手 / iPhone 13 Pro, iOS 16.3, 竖屏）
 // =====================================================================
-// 版本：v7.5（2026-06-10）
+// 版本：v7.6（2026-06-10）
 // 启动日志第一行会打印本版本号——每次测试前先核对日志里的版本，避免误测旧版（出过一次）。
 // 版本历史：
 //   v1  逐像素 GetPixelColor 扫描慢到等于卡死 -> 改原生 FindColor 区域找色
@@ -59,6 +59,29 @@
 //        ⑥ 轮前三连确认分流：含绿长钮 -> 安全退出（不可逆风险照旧硬停）；只有
 //           白卡列 -> 告警后放行（无绿钮就无耗星尘/误进化风险；真不在好友页会被
 //           等 NEXT 超时安全兜底）——锚点将来再漏认也只慢 10 秒，不再整轮硬停。
+//   v7.6 修“收到带 mega 进化选项的宝可梦：收尾把 MEGA EVOLVE 行当 X 点开确认弹窗，
+//        随后整轮卡死”（实测日志：Tap 完成页 X @ 588,1845 -> 弹窗蒙黑全屏 ->
+//        “X 未识别；带内青色原始点 @ 364,1746”反复刷屏——364,1746 恰是检测带左上角，
+//        说明命中的是整片蒙黑的灰，不是任何按钮 -> 兜底全点在蒙黑背景上点空，
+//        烧完保险丝安全退出，本轮报废）。三处根因三处修：
+//        ① 旧 CloseSpec 的 G 下限 132 + R 上限 155 把 132~155 的中性灰整段放进
+//           容差盒（文字抗锯齿必经色，v7.4 复盘点过名）：mega 区“能量糖×200”成本行
+//           的灰字被认成 X 候选点 + 窄列，而 MEGA EVOLVE 整行可点（成本区域也算
+//           按钮），点哪都等于按 MEGA EVOLVE。新增 XSolidSpec（G≥178 且 R≤142，
+//           任何 R=G=B 的中性灰在数学上进不来）专用于 FindCloseIn；窄列验证拆成
+//           两段都必须命中，~50px 的小图标（mega 能量糖里也有青色）压不过第二段。
+//           好友页锚点的三色谱并集仍用宽 CloseSpec，v7.5 的标定一个字不动——
+//           不重蹈 PR#10“为修一处改共用色盒、殃及另一处”的覆辙。
+//        ② 兜底档位 87.5% 正落在 MEGA EVOLVE 可点行内（84%~88.3%），且距两处实测
+//           X 中心（92.8% mega 详情页 / 93.7% 好友页同款）≥5%、远超圆钮半径 ~2.2%，
+//           本来就点不中 X，纯属有害档位：删除，四档按实测中心重排为 93.5/92/95/90.5。
+//        ③ 弹窗自愈：详情页标记成立（弹窗自身白面板会撑住白卡列探针，实测卡死期间
+//           标记一直为真）但“底部页签条找不到纯白”（正常详情页底部永远有整条白色
+//           页签栏，确认弹窗会把全屏蒙黑）= 有弹窗压顶——暂停找 X/兜底（蒙黑下点
+//           什么都不可控），定位弹窗的亮绿主按钮（蒙黑把 POWER UP 压到 G≈115，
+//           亮绿长钮唯一指向弹窗按钮），绝不点它本身（确认弹窗上它就是 YES，点了
+//           就真 mega 进化），只点它下方的 NO（绿字优先、几何盲点兜底）；
+//           连续 4 次关不掉打诊断安全退出。
 // =====================================================================
 //
 // ===== 核心思路 =====
@@ -103,16 +126,31 @@
 //    锚点假阴 -> 白卡列三连确认 -> 在真好友页上误停整轮。图标窗找色改为三色谱并集
 //    （见 IconSpecHitIn），并给锚点加“检测带内有实心绿长钮 = 否决”的硬安全闸，
 //    色谱放宽不以牺牲“锚点在(可点按钮的)详情页恒不成立”为代价。
-// 4. 完成页 X 的圆钮判定：候选点正下方窄列 25~85px 必须仍是同色（X 是实心青色圆钮）。
-//    GYMS & RAIDS 选中页签的细下划线压在检测带顶上时（实测正是它抢走了候选点，
-//    导致一直点到 385,1874 而真 X 在 485,1949），正下方是白底，一票否决。
-//    左右 130px 以外不允许还有同色，排除 300px+ 的长按钮。
-// 5. X 找不到时的兜底：x 固定在实测的 50.5%（485/960），高度在 93.5%/90.5%/96%/87.5% 四档轮换点击。
-//    详情页 X 的精确高度从截图只能标定到 ±3%（好友页实测 93.7%，详情页可能略高），
-//    圆钮半径约 2%，四档轮换保证总有一次落进按钮；点空只落在招式行上，无害。
+// 4. 完成页 X 的圆钮判定：候选点只认饱和青 XSolidSpec（G≥178 且 R≤142，中性灰在
+//    数学上进不来——v7.6 前用宽谱 CloseSpec，它含 132~155 的中性灰即文字抗锯齿色，
+//    mega 区“能量糖×200”成本行的灰字通过了全部验证、把可点的 MEGA EVOLVE 行当 X
+//    点出了进化确认弹窗）。候选点正下方窄列拆两段（+25~+50、+55~+85）都必须仍是
+//    同色：X 是 ~90px 实心青色圆钮，两段都在钮身内；GYMS & RAIDS 选中页签的细下划线
+//    （实测曾抢走候选点，导致一直点到 385,1874 而真 X 在 485,1949）正下方是白底，
+//    第一段就否决；~50px 的小图标第二段已出图标底，同样否决（旧版一整段 25~85
+//    “窗内任意命中”会被小图标自身下半撑过去）。左右 130px 以外不允许还有同色，
+//    排除 300px+ 的长按钮。
+// 5. X 找不到时的兜底：x 固定在实测的 50.5%（485/960），高度按 93.5%/92%/95%/90.5%
+//    四档轮换（v7.6 按两处实测 X 中心 92.8%（mega 详情页）/93.7%（好友页同款）重排；
+//    旧 87.5% 档删除——它落在 MEGA EVOLVE 可点行内 84%~88.3%，带 mega 的宝可梦会被
+//    点出确认弹窗，且距实测中心 ≥5% 本来就点不中 X）。最浅档 90.5% 离 mega 行底边
+//    仍有 ~2.2% 安全边；点空只落在招式行上，无害。
 //    全部是屏幕百分比，不是写死像素，换其他尺寸的 iPhone 仍然成立。
 //    v7 加保险丝：识别到的 X 最多点 3 次、比例兜底最多 4 档；全部用完标记还在，
 //    大概率是标记在当前页面误报而不是 X 没点中，打印双探针诊断后安全退出，绝不无限补点。
+// 6. 误触弹窗自愈（v7.6）：收尾期间“详情页标记成立”但“底部页签条找不到纯白”
+//    （正常详情页/好友页底部 95.5%~98.5% 永远有整条白色页签栏；确认弹窗把全屏蒙黑，
+//    纯白被压成 ~140 的灰）= 有弹窗压顶。此时暂停找 X 与兜底（蒙黑下点什么都不可控），
+//    定位弹窗的亮绿主按钮（蒙黑把正常绿钮压到 G≈115、远低于 GreenBtnSpec 下限 168，
+//    亮绿长钮唯一指向弹窗按钮），绝不点它本身——确认弹窗上它就是 YES，点了就真
+//    mega 进化/强化，不可逆——只点它下方 150~220px 的绿色 NO 文字（找不到绿字则按
+//    几何位绿钮顶+185px 盲点 NO；单钮提示弹窗在该位置是蒙黑背景，点空无副作用）。
+//    连续 4 次关不掉就打诊断安全退出，绝不无限点。
 //
 // ===== 使用方式 =====
 // 从好友资料页开始运行（能看到 SEND GIFT / LOCAL TRADE / REMOTE TRADE 的页面）。
@@ -124,6 +162,7 @@
 //      -> 绿色 NEXT 出现就点（验证页面切走） -> 对方选好后绿色 CONFIRM 出现就点
 //      -> 验证变橙色 CANCEL（对方先确认导致橙色一闪而过也有兜底判定）
 //      -> 橙色消失 = 双方确认、动画开始 -> 等“详情页标记”出现 -> 找底部 X 点掉
+//         （误触出 MEGA EVOLVE 等确认弹窗时自动点 NO 自愈，绝不点 YES）
 //      -> 验证“详情页标记”消失 -> 直接进入下一轮（开头的锚点就绪等待就是回页缓冲）。
 
 Dim ScreenW, ScreenH
@@ -132,11 +171,13 @@ Dim MaxTrades, TradeCount
 Dim StepDelayMs
 Dim FriendReadyMaxSec, LeaveFriendMaxSec, SelectRetryIntervalSec, WaitNextMaxSec, NextRetryMaxSec
 Dim WaitPartnerSelectSec, WaitPartnerConfirmSec, WaitCompleteMaxSec
-Dim GreenBtnSpec, OrangeSpec, CloseSpec, WhiteCardSpec, FriendBlueSpec
+Dim GreenBtnSpec, OrangeSpec, CloseSpec, WhiteCardSpec, FriendBlueSpec, XSolidSpec
 Dim NextX1, NextY1, NextX2, NextY2, NextLeftMaxX
 Dim ConfX1, ConfY1, ConfX2, ConfY2, ConfLeftMaxX
 Dim CloseX1, CloseY1, CloseX2, CloseY2
 Dim CloseFallbackX
+Dim BarX1, BarY1, BarX2, BarY2
+Dim DlgX1, DlgY1, DlgX2, DlgY2, DlgLeftMaxX
 Dim DetX1, DetY1, DetX2, DetY2, DetLeftMaxX
 Dim CardX1, CardY1, CardX2, CardY2
 Dim FriIconY1, FriIconY2, FriLtX1, FriLtX2, FriBtX1, FriBtX2, FriGapX1, FriGapX2
@@ -147,7 +188,7 @@ Dim CardFoundX, CardFoundY
 Dim ScriptVersion
 Dim ProbeSawGreen
 
-ScriptVersion = "v7.5"        // 与文件头版本号保持一致；启动日志会打印，测试前先核对
+ScriptVersion = "v7.6"        // 与文件头版本号保持一致；启动日志会打印，测试前先核对
 BaseW = 960
 BaseH = 2079
 ScreenW = GetScreenX()
@@ -178,10 +219,21 @@ StepDelayMs = 1500            // 坐标点击后的固定缓冲
 GreenBtnSpec = "78CD73-502537"
 // 橙色 CANCEL 长条按钮（BGR）。只能用 BGR 一种写法，见头部说明第 2 条。
 OrangeSpec = "3BA3F2-304040"
-// 完成页 X 圆钮的青色（BGR）：R 15~155, G 132~228, B 105~225。
-// 以实测 X 笔画取色 RGB(96,205,176)（工具显示 B0CD60）为锚点放宽；
-// 长按钮已被检测带（88% 起）排除在外，不再靠压低 G 上限去区分。
+// PoGo 青色宽谱（BGR）：R 15~155, G 132~228, B 105~225。
+// 以实测 X 笔画取色 RGB(96,205,176)（工具显示 B0CD60）为锚点放宽。
+// v7.6 起不再用于找 X（G 下限 132 + R 上限 155 会把 132~155 的中性灰整段放进来，
+// 文字抗锯齿/蒙黑画面全是这种灰，实测在 mega 区翻车，见 XSolidSpec 注释），
+// 现仅用于：好友页锚点的三色谱并集（v7.5 标定，覆盖旧青色图标和插画的青蓝过渡色，
+// 保持不动）和 X 未识别时的宽谱诊断行。
 CloseSpec = "A5B455-3C3046"
+// 完成页 X 圆钮本体的饱和青色（v7.6，BGR）：R 20~142, G 178~232, B 130~224。
+// 实测 X 笔画锚点 RGB(96,205,176) 仍居中。要点：G 下限 178 高于 R 上限 142，
+// 任何 R=G=B 的中性灰在数学上进不了盒，文字抗锯齿灰、弹窗蒙黑灰整类排除——
+// 旧宽谱正是被这类灰骗过：mega 区“能量糖×200”成本行灰字被认成 X 候选点 + 窄列，
+// 点中可点的 MEGA EVOLVE 行弹出进化确认框；弹窗蒙黑后整片 ~140 的暗灰又持续命中
+// 宽谱（实测日志原始点恒为检测带左上角 364,1746）。
+// 本谱只给 FindCloseIn（X 找点 + 圆钮验证）和 X 诊断用；好友页锚点不用它。
+XSolidSpec = "B1CD51-2F1B3D"
 // 好友页 LOCAL TRADE 插画图标里的饱和蓝（手机机身）：B 179~255, G 112~192, R 30~110。
 // 只给好友页锚点的三色谱并集用（见 IconSpecHitIn）。排除项：白色/浅灰（G、R 超上限）、
 // 中性灰文字（R>110 或 G<112 进不来）、淡天空蓝（G 超上限）、深蓝队徽背景（B<179）。
@@ -217,6 +269,26 @@ CloseX2 = Int(ScreenW * 62 / 100)
 CloseY2 = Int(ScreenH * 98 / 100)
 // 兜底点击的 x（来自实测 485/960=50.5%，比例坐标；高度见 TapCloseFallback 的四档轮换）
 CloseFallbackX = Int(ScreenW * 505 / 1000)
+
+// 底部页签条探针带（v7.6，弹窗判定）：x 20%~80%、y 95.5%~98.5%。详情页/好友页底部
+// 这一带永远有一整条纯白页签栏（GYMS & RAIDS / TRAINER BATTLES）；全屏确认弹窗会把
+// 它蒙黑成 ~140 的灰，一个纯白点都不剩。y 下沿停在 98.5% 避开屏幕最底的黑色 Home
+// 指示条；x 两端避开屏幕圆角和 x≥87% 的 LiveFeed 悬浮窗。只在“详情页标记成立”时
+// 参与判定（标记在弹窗下仍成立：弹窗自身的白面板撑住白卡列探针，实测卡死期间标记一直为真）。
+BarX1 = Int(ScreenW * 20 / 100)
+BarY1 = Int(ScreenH * 955 / 1000)
+BarX2 = Int(ScreenW * 80 / 100)
+BarY2 = Int(ScreenH * 985 / 1000)
+
+// 弹窗主按钮搜索窗（v7.6）：确认弹窗的 YES / 单钮提示弹窗的 OK 都是居中的亮绿长钮，
+// 实测 mega 确认弹窗 YES 顶约 64% 高、左缘约 20%；窗取 x 10%~75%、y 50%~80%，
+// 兼容不同高度的弹窗。只在“底部页签条被遮蔽”（全屏蒙黑）时才搜：蒙黑把 POWER UP 等
+// 正常绿钮压到 G≈115、远低于 GreenBtnSpec 下限 168，亮绿长钮唯一指向弹窗主按钮。
+DlgX1 = Int(ScreenW * 10 / 100)
+DlgY1 = Int(ScreenH * 50 / 100)
+DlgX2 = Int(ScreenW * 75 / 100)
+DlgY2 = Int(ScreenH * 80 / 100)
+DlgLeftMaxX = Int(ScreenW * 40 / 100)
 
 // “宝可梦详情页开着”的页面标记：左侧 60%~84% 高度的绿色长按钮（POWER UP / EVOLVE / CHANGE FORM）。
 // 好友页同区域的干扰源（v7.2 实测更正）：“64 LEVEL”青色文字（过不了 150px 横向验证）
@@ -412,11 +484,16 @@ Function FindPillIn(x1, y1, x2, y2, spec, maxLeftX)
     Loop While guard < 40 And curY1 < y2
 End Function
 
-// 找完成页底部青色 X 圆钮。验证：
-// 1) 候选点“正下方窄列”25~85px 仍是同色——X 是 ~90px 的实心圆钮，有纵向厚度；
-//    GYMS & RAIDS 页签的细下划线（实测抢点元凶）正下方是白底，在这里被一票否决。
+// 找完成页底部青色 X 圆钮。v7.6 起候选与验证全部用 XSolidSpec（饱和青，中性灰
+// 在数学上进不来）：旧宽谱 CloseSpec 在 mega 区翻车——“能量糖×200”成本行的抗锯齿
+// 灰字被认成候选点 + 窄列，把可点的 MEGA EVOLVE 行当 X 点开了进化确认弹窗
+//（实测 Tap @ 588,1845，整行可点、成本区域也算按钮）。验证：
+// 1) 候选点“正下方窄列”拆两段（+25~+50、+55~+85）都必须仍是同色——X 是 ~90px 的
+//    实心圆钮，两段都在钮身内；GYMS & RAIDS 页签的细下划线（实测抢点元凶）正下方
+//    是白底，第一段就否决；~50px 的小图标（mega 能量糖里也有青色）第二段已出图标底，
+//    同样否决——旧版一整段 25~85 是“窗内任意命中”，小图标自身下半就能撑过去。
 //    窄列只看候选点正下方，不会像宽框那样擦到旁边别的控件。
-// 2) 左右 130px 以外不允许还有同色，排除 300px+ 的长按钮。
+// 2) 左右 130px 以外不允许还有同色，排除 300px+ 的长按钮（CHANGE FORM 等）。
 // 候选点验证失败就从它下方继续找。
 Function FindCloseIn(x1, y1, x2, y2)
     Dim curY1, guard, topX, topY
@@ -425,20 +502,22 @@ Function FindCloseIn(x1, y1, x2, y2)
     guard = 0
     Do
         guard = guard + 1
-        If FindSpecIn(x1, curY1, x2, y2, CloseSpec) = False Then
+        If FindSpecIn(x1, curY1, x2, y2, XSolidSpec) = False Then
             Exit Function
         End If
         topX = FoundX
         topY = FoundY
-        If FindSpecIn(topX - 5, topY + 25, topX + 30, topY + 85, CloseSpec) Then
-            If FindSpecIn(topX + 130, topY, topX + 260, topY + 20, CloseSpec) = False Then
-                If FindSpecIn(topX - 260, topY, topX - 130, topY + 20, CloseSpec) = False Then
-                    CloseFoundX = topX
-                    CloseFoundY = topY
-                    CloseTapX = topX + 25
-                    CloseTapY = topY + 42
-                    FindCloseIn = True
-                    Exit Function
+        If FindSpecIn(topX - 5, topY + 25, topX + 30, topY + 50, XSolidSpec) Then
+            If FindSpecIn(topX - 5, topY + 55, topX + 30, topY + 85, XSolidSpec) Then
+                If FindSpecIn(topX + 130, topY, topX + 260, topY + 20, XSolidSpec) = False Then
+                    If FindSpecIn(topX - 260, topY, topX - 130, topY + 20, XSolidSpec) = False Then
+                        CloseFoundX = topX
+                        CloseFoundY = topY
+                        CloseTapX = topX + 25
+                        CloseTapY = topY + 42
+                        FindCloseIn = True
+                        Exit Function
+                    End If
                 End If
             End If
         End If
@@ -675,23 +754,67 @@ Sub TapFirstPokemon()
     SafeTap 210, 645, "FIRST POKEMON"
 End Sub
 
-// X 兜底点击：x 固定在实测的 50.5%，高度按 93.5% / 90.5% / 96% / 87.5% 四档轮换。
-// 详情页 X 的精确高度从截图只能标定到 ±3%，圆钮半径约 2%，轮换保证总有一次落进按钮；
-// 点空只会落在招式行/空白上，无害。配合“详情页标记消失才算成功”，点中与否由标记说了算。
+// X 兜底点击：x 固定在实测的 50.5%，高度按 93.5% / 92% / 95% / 90.5% 四档轮换。
+// v7.6 按两处实测 X 中心重排：92.8%（mega 详情页，X 中心 ~476,1930）/ 93.7%
+//（好友页同款 485,1949），圆钮半径约 2.2%，四档全压在实测区间附近、按命中概率排序。
+// 旧 87.5% 档删除——MEGA EVOLVE 行占 84%~88.3% 且整行可点（成本“能量糖×200”区域
+// 也算按钮），87.5% 的盲点正落在行内，带 mega 选项的宝可梦会被点出进化确认弹窗；
+// 而它距两处实测中心 ≥5%、远超圆钮半径，本来就不可能点中 X，纯属有害档位。
+// 剩余最浅档 90.5% 离 mega 行底边还有 ~2.2% 安全边。点空只会落在招式行/空白上，
+// 无害。配合“详情页标记消失才算成功”，点中与否由标记说了算。
 Sub TapCloseFallback(idx)
     Dim fy, m
     m = idx Mod 4
     If m = 0 Then
         fy = Int(ScreenH * 935 / 1000)
     ElseIf m = 1 Then
-        fy = Int(ScreenH * 905 / 1000)
+        fy = Int(ScreenH * 920 / 1000)
     ElseIf m = 2 Then
-        fy = Int(ScreenH * 960 / 1000)
+        fy = Int(ScreenH * 950 / 1000)
     Else
-        fy = Int(ScreenH * 875 / 1000)
+        fy = Int(ScreenH * 905 / 1000)
     End If
     TapPoint CloseFallbackX, fy, "完成页 X（比例兜底档位 " & m & "）"
 End Sub
+
+// 底部页签条是否被遮蔽（v7.6，弹窗判定）：详情页/好友页底部 95.5%~98.5% 永远有
+// 一整条纯白页签栏；误触 MEGA EVOLVE / POWER UP 等弹出确认框时全屏蒙黑，
+// 纯白被压成 ~140 的灰，这条带里找不到任何纯白点。只在“详情页标记成立”时调用。
+Function BottomBarCovered()
+    BottomBarCovered = False
+    If FindSpecIn(BarX1, BarY1, BarX2, BarY2, WhiteCardSpec) = False Then
+        BottomBarCovered = True
+    End If
+End Function
+
+// 关掉误触弹出的全屏确认弹窗（v7.6）。蒙黑的屏幕上只有弹窗自己的主按钮还是亮绿
+//（被蒙黑的 POWER UP 绿 G 只剩 ~115，远低于 GreenBtnSpec 下限 168，不会误中），
+// 所以“暗屏 + 亮绿长钮”唯一指向弹窗主按钮（mega/进化/强化确认的 YES，或单钮提示的 OK）。
+// 安全规则：绝不点这颗绿钮本身——确认弹窗上它就是 YES，点下去 = 真的 mega 进化/
+// 强化，不可逆消耗。只点取消：
+//   1) 绿钮正下方 150~220px 找绿色文字（PoGo 双钮确认弹窗的 NO 是绿字白底，
+//      实测 mega 弹窗 NO 在 YES 顶下方 ~185px）：找到就点它；
+//   2) 没找到绿字（NO 色值漂了/单钮提示弹窗）：按几何位盲点 NO（屏宽 50.5% 居中、
+//      绿钮顶 +185px）。单钮弹窗在这个位置是蒙黑背景，点空无副作用，关不掉的弹窗
+//      留给调用方的次数保险丝安全退出。
+// 返回是否做了一次取消点击。
+Function DismissBlockingDialog()
+    Dim nx, ny
+    DismissBlockingDialog = False
+    If FindPillIn(DlgX1, DlgY1, DlgX2, DlgY2, GreenBtnSpec, DlgLeftMaxX) = False Then
+        TracePrint "暗屏但没找到弹窗绿钮（转场瞬时变暗？非标准弹窗？），本次不点，等复查"
+        Exit Function
+    End If
+    nx = PillFoundX
+    ny = PillFoundY
+    TracePrint "弹窗主按钮（亮绿）@ " & nx & "," & ny & "——绝不点它（确认弹窗上它是 YES），找下方取消项"
+    If FindSpecIn(nx, ny + 150, nx + 340, ny + 220, GreenBtnSpec) Then
+        TapPoint FoundX + 15, FoundY + 10, "弹窗 NO（绿字）"
+    Else
+        TapPoint Int(ScreenW * 505 / 1000), ny + 185, "弹窗 NO（几何盲点，绿钮顶+185px）"
+    End If
+    DismissBlockingDialog = True
+End Function
 
 // 等好友页就绪（v7.3，检测驱动）：轮询好友页锚点，一出现立即返回 True。
 // 取代了两段固定等待——旧版收尾后的 5 秒盲等、以及开局对详情页的怀疑式预检：
@@ -896,63 +1019,88 @@ End Function
 // 交易动画放完后弹出“收到的宝可梦详情页”。全程以“详情页标记”为准：
 //   标记出现 -> 在底部带找 X 圆钮并点击 -> 标记连续两次消失 = 关闭成功。
 //   标记开着却 8 秒找不到 X 时，启动比例兜底点击（四档高度轮换，见 TapCloseFallback）。
+// v7.6 弹窗自愈：标记成立但底部页签条被遮蔽（全屏蒙黑）= 有确认弹窗压顶（实测事故：
+// mega 区灰字被旧宽谱认成 X -> 点中可点的 MEGA EVOLVE 行 -> 弹窗蒙黑 -> X 永远找
+// 不到、兜底全点空，烧完保险丝整轮报废）。弹窗压顶时禁止找 X/兜底（蒙黑下点什么
+// 都不可控），只做“点 NO 取消”（见 DismissBlockingDialog，绝不点 YES），连续 4 次
+// 关不掉就打诊断安全退出。
 // v7 加保险丝：识别到的 X 最多点 3 次、比例兜底最多 4 档。全部用完标记还在，
 // 大概率是“标记在当前页面误报”而不是 X 没点中（点掉真 X 回到好友页后，若探针在
 // 好友页误报，旧版会接着把好友页的 X 也点掉、再把好友列表点穿——无限补点必须废除）。
 // 此时打印双探针诊断并安全退出，把误报现场留在屏幕上方便取证。
 // 不再用“X 是否还在”验证关闭——好友页底部也有同款 X，那样验证永远过不了（实测踩坑）。
-// 找不到 X 时会打印带内青色原始点坐标，方便对照截图校准颜色/区域。
+// 找不到 X 时会打印带内原始点坐标（饱和青/宽谱分开报），方便对照截图校准颜色/区域。
 Function TapCloseWhenDone()
-    Dim elapsed, sawPage, goneCount, noXElapsed, fbIndex, finderTaps, tappedX
+    Dim elapsed, sawPage, goneCount, noXElapsed, fbIndex, finderTaps, tappedX, dlgTries
     elapsed = 0
     sawPage = False
     goneCount = 0
     noXElapsed = 0
     fbIndex = 0
     finderTaps = 0
+    dlgTries = 0
     TapCloseWhenDone = False
     Do
         If DetailPageOpen() Then
             sawPage = True
             goneCount = 0
-            tappedX = False
-            If finderTaps < 3 Then
-                If FindCloseIn(CloseX1, CloseY1, CloseX2, CloseY2) Then
-                    tappedX = True
-                    finderTaps = finderTaps + 1
-                    noXElapsed = 0
-                    TapPoint CloseTapX, CloseTapY, "完成页 X"
-                    Delay 2000
-                    elapsed = elapsed + 3
+            If BottomBarCovered() Then
+                dlgTries = dlgTries + 1
+                If dlgTries > 4 Then
+                    TracePrint "确认弹窗连续 4 次取消失败，安全退出（防在蒙黑屏幕上乱点）；请手动关闭弹窗并收尾本轮"
+                    ProbeAndLogMarker "弹窗卡死"
+                    Exit Function
                 End If
-            End If
-            If tappedX = False Then
-                noXElapsed = noXElapsed + 2
-                If noXElapsed >= 8 Then
-                    If fbIndex >= 4 Then
-                        TracePrint "识别 X 已点 " & finderTaps & " 次 + 比例兜底已轮完 4 档，详情页标记仍在：要么 X 始终没点中，要么标记在当前页面误报"
-                        ProbeAndLogMarker "收尾卡死"
-                        TracePrint "为安全停止补点（防在错误页面乱点），请把上面的标记诊断连同当前屏幕截图发回"
-                        Exit Function
-                    End If
-                    TapCloseFallback fbIndex
-                    fbIndex = fbIndex + 1
+                TracePrint "底部页签条被遮蔽：有全屏确认弹窗压住详情页（多半是误触 MEGA EVOLVE / POWER UP），尝试取消 " & dlgTries & "/4"
+                If DismissBlockingDialog() Then
                     noXElapsed = 0
-                    Delay 2000
-                    elapsed = elapsed + 3
-                ElseIf finderTaps >= 3 Then
-                    TracePrint "识别到的 X 已点满 3 次仍未关闭，不再点它（防误报循环点击），等待比例兜底/诊断"
-                    Delay 1200
-                    elapsed = elapsed + 2
-                Else
-                    // 校准辅助：报告带内青色原始点（如有），看它和真 X 差在哪
-                    If FindSpecIn(CloseX1, CloseY1, CloseX2, CloseY2, CloseSpec) Then
-                        TracePrint "X 未识别；带内青色原始点 @ " & FoundX & "," & FoundY & "（未通过圆钮验证）"
-                    Else
-                        TracePrint "X 未识别；检测带内没有任何青色点（颜色/区域需校准）"
+                End If
+                Delay 1500
+                elapsed = elapsed + 3
+            Else
+                tappedX = False
+                If finderTaps < 3 Then
+                    If FindCloseIn(CloseX1, CloseY1, CloseX2, CloseY2) Then
+                        tappedX = True
+                        finderTaps = finderTaps + 1
+                        noXElapsed = 0
+                        TapPoint CloseTapX, CloseTapY, "完成页 X"
+                        Delay 2000
+                        elapsed = elapsed + 3
                     End If
-                    Delay 1200
-                    elapsed = elapsed + 2
+                End If
+                If tappedX = False Then
+                    noXElapsed = noXElapsed + 2
+                    If noXElapsed >= 8 Then
+                        If fbIndex >= 4 Then
+                            TracePrint "识别 X 已点 " & finderTaps & " 次 + 比例兜底已轮完 4 档，详情页标记仍在：要么 X 始终没点中，要么标记在当前页面误报"
+                            ProbeAndLogMarker "收尾卡死"
+                            TracePrint "为安全停止补点（防在错误页面乱点），请把上面的标记诊断连同当前屏幕截图发回"
+                            Exit Function
+                        End If
+                        TapCloseFallback fbIndex
+                        fbIndex = fbIndex + 1
+                        noXElapsed = 0
+                        Delay 2000
+                        elapsed = elapsed + 3
+                    ElseIf finderTaps >= 3 Then
+                        TracePrint "识别到的 X 已点满 3 次仍未关闭，不再点它（防误报循环点击），等待比例兜底/诊断"
+                        Delay 1200
+                        elapsed = elapsed + 2
+                    Else
+                        // 校准辅助：报告带内原始点（如有），看它和真 X 差在哪。
+                        // 饱和青点 = 真候选但没过圆钮验证；只有宽谱点 = 文字灰边/蒙黑灰，
+                        // v7.6 起这类点已不再当 X 候选（正是 mega 行误点事故的元凶）。
+                        If FindSpecIn(CloseX1, CloseY1, CloseX2, CloseY2, XSolidSpec) Then
+                            TracePrint "X 未识别；带内饱和青点 @ " & FoundX & "," & FoundY & "（未通过圆钮验证）"
+                        ElseIf FindSpecIn(CloseX1, CloseY1, CloseX2, CloseY2, CloseSpec) Then
+                            TracePrint "X 未识别；带内只有宽谱青/灰点 @ " & FoundX & "," & FoundY & "（文字灰边或蒙黑画面，已排除出 X 候选）"
+                        Else
+                            TracePrint "X 未识别；检测带内没有任何青色点（颜色/区域需校准）"
+                        End If
+                        Delay 1200
+                        elapsed = elapsed + 2
+                    End If
                 End If
             End If
         Else
