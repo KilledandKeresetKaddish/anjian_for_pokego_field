@@ -1,6 +1,6 @@
 // Pokemon GO 自动交易脚本（按键精灵手机助手 / iPhone 13 Pro, iOS 16.3, 竖屏）
 // =====================================================================
-// 版本：v7.3（2026-06-10）
+// 版本：v7.5（2026-06-10）
 // 启动日志第一行会打印本版本号——每次测试前先核对日志里的版本，避免误测旧版（出过一次）。
 // 版本历史：
 //   v1  逐像素 GetPixelColor 扫描慢到等于卡死 -> 改原生 FindColor 区域找色
@@ -34,6 +34,31 @@
 //        告警后放行，由 NEXT 超时兜底）。固定等待替换：点入口后 4 秒盲等 ->
 //        “锚点消失=已切页”检测（没切走自动补点入口）；收尾后 5 秒盲等 -> 删除，
 //        并入下轮开头的“锚点就绪”检测；删 WaitSeconds 及其逐秒刷屏日志。
+//   v7.4 （PR#10，未合并，被 v7.5 取代）想修“明明在好友页却锚点未现”：好友图标
+//        整体换用 CloseSpec 找色 + 图标行高度窗放宽到 73.5%~80.5%。复盘发现三个
+//        问题：① 单色盒换猜——BATTLE 绿色插画图标（B<105）会掉出 CloseSpec，
+//        修了蓝图标可能反丢绿图标；② 80.5% 把图标文字标签（~79.2% 起）圈进窗，
+//        而 CloseSpec 含 132~155 的中性灰（文字抗锯齿必经色），REMOTE TRADE 标签
+//        左端伸进间隙窗就会否决真好友页；③ CloseSpec 兼容青色文字/中性灰，
+//        详情页白卡上的文字可能点亮 BATTLE 窗，削弱“锚点在详情页恒不成立”的
+//        安全不变量（锚点是入口盲点的放行依据，假阳后果是点到 POWER UP/EVOLVE）。
+//   v7.5 修“好友页新版插画图标导致锚点漏认”（实测日志：等待好友页就绪（锚点未现）
+//        ×10 秒 -> 白卡列=有(718,997) 三连确认 -> 误停整轮）。当前好友页四枚图标
+//        已是彩色插画（LOCAL TRADE 蓝色手机 / BATTLE 绿色场景），不再是 v7.2 标定
+//        时的扁平青色，GreenBtnSpec（G≥168 且 B≤200）对蓝手机图标整窗漏检。修复：
+//        ① 图标窗找色改三色谱并集（GreenBtnSpec / CloseSpec / FriendBlueSpec
+//           任一命中即算图标在场），同时覆盖旧青色图标与新插画图标；
+//        ② 图标行高度窗 73.5%~78.8%：上沿略放宽容裁切偏差，下沿保持 78.8% 不动
+//           （79.2% 起是图标文字标签，圈进来会让间隙净空被标签抗锯齿像素误触发）；
+//        ③ 间隙窗右缘 55% -> 54%，离 REMOTE TRADE 图标左缘再让出安全边；
+//        ④ 锚点加硬安全闸：检测带内验证出实心绿色长按钮 = 一定不是好友页，锚点
+//           直接不成立——色谱再宽也不会把“可点的 POWER UP / EVOLVE”详情页认成
+//           好友页，入口坐标的构造性安全保住；
+//        ⑤ 锚点超时打印逐窗×逐色谱分解日志（LogAnchorDiag），再失败可直接校准，
+//           不用再“截图回传猜颜色”；
+//        ⑥ 轮前三连确认分流：含绿长钮 -> 安全退出（不可逆风险照旧硬停）；只有
+//           白卡列 -> 告警后放行（无绿钮就无耗星尘/误进化风险；真不在好友页会被
+//           等 NEXT 超时安全兜底）——锚点将来再漏认也只慢 10 秒，不再整轮硬停。
 // =====================================================================
 //
 // ===== 核心思路 =====
@@ -65,14 +90,19 @@
 //    v6 的白卡探针只验证下方 40~90px 一小段，被好友页 48%~56% 人物场景里的白色元素
 //    （云朵/白色伙伴宝可梦/白色衣物）骗过，开局直接误判成详情页；v7 改为纵向长列
 //    （场景元素下缘是天空蓝/地面色，四段过不全），且轮前绝不补点 X：
-//    v7.3 起正常轮次由锚点正向确认放行，锚点超时才打诊断做三连确认，
-//    确认残留就安全退出、提示手动收尾（见 PreEntryGate）。
+//    v7.3 起正常轮次由锚点正向确认放行，锚点超时才打诊断做三连确认；
+//    v7.5 起三连确认分流——含绿长钮才安全退出，只有白卡列则告警放行
+//    （无绿钮即无不可逆风险，详见 PreEntryGate）。
 //    v7.2 教训：好友页还有“白底样式”（人物背景整片纯白 + 队徽水印），右侧白色长列
 //    在这种样式上天然成立（实测 白卡列=有(718,997)），白色本身已无法区分两页。
 //    所以页面标记新增“好友页锚点”一票否决（见 FriendAnchorsVisible）：LOCAL TRADE
 //    与 BATTLE 双图标定位 + 图标间净空同时成立即确认好友页、标记强制 False；
 //    BATTLE 锚点窗（81%~86%）在详情页上是白卡内容区，按钮最宽到 ~42% 永远够不着，
 //    锚点在详情页恒为不成立，否决不会吞掉真详情页。
+//    v7.5 教训：好友页图标改版成彩色插画（蓝手机/绿场景）后 GreenBtnSpec 整窗漏检，
+//    锚点假阴 -> 白卡列三连确认 -> 在真好友页上误停整轮。图标窗找色改为三色谱并集
+//    （见 IconSpecHitIn），并给锚点加“检测带内有实心绿长钮 = 否决”的硬安全闸，
+//    色谱放宽不以牺牲“锚点在(可点按钮的)详情页恒不成立”为代价。
 // 4. 完成页 X 的圆钮判定：候选点正下方窄列 25~85px 必须仍是同色（X 是实心青色圆钮）。
 //    GYMS & RAIDS 选中页签的细下划线压在检测带顶上时（实测正是它抢走了候选点，
 //    导致一直点到 385,1874 而真 X 在 485,1949），正下方是白底，一票否决。
@@ -87,7 +117,8 @@
 // ===== 使用方式 =====
 // 从好友资料页开始运行（能看到 SEND GIFT / LOCAL TRADE / REMOTE TRADE 的页面）。
 // 流程：等好友页锚点就绪（默认就该在好友页：锚点一出现立即开始，无固定等待；
-//       锚点超时才做“标记三连确认”，确认有残留详情页则安全退出，绝不乱点）
+//       锚点超时才打“锚点分解 + 标记三连确认”诊断：确认含绿长钮的残留详情页
+//       则安全退出；只有白卡列则告警放行，由 NEXT 超时兜底，绝不乱点）
 //      -> LOCAL TRADE（“锚点消失=已切到列表”检测驱动，没切走自动补点一次）
 //      -> 点第一只宝可梦（NEXT 没出现会自动重选）
 //      -> 绿色 NEXT 出现就点（验证页面切走） -> 对方选好后绿色 CONFIRM 出现就点
@@ -101,7 +132,7 @@ Dim MaxTrades, TradeCount
 Dim StepDelayMs
 Dim FriendReadyMaxSec, LeaveFriendMaxSec, SelectRetryIntervalSec, WaitNextMaxSec, NextRetryMaxSec
 Dim WaitPartnerSelectSec, WaitPartnerConfirmSec, WaitCompleteMaxSec
-Dim GreenBtnSpec, OrangeSpec, CloseSpec, WhiteCardSpec
+Dim GreenBtnSpec, OrangeSpec, CloseSpec, WhiteCardSpec, FriendBlueSpec
 Dim NextX1, NextY1, NextX2, NextY2, NextLeftMaxX
 Dim ConfX1, ConfY1, ConfX2, ConfY2, ConfLeftMaxX
 Dim CloseX1, CloseY1, CloseX2, CloseY2
@@ -114,8 +145,9 @@ Dim PillFoundX, PillFoundY, PillTapX, PillTapY
 Dim CloseFoundX, CloseFoundY, CloseTapX, CloseTapY
 Dim CardFoundX, CardFoundY
 Dim ScriptVersion
+Dim ProbeSawGreen
 
-ScriptVersion = "v7.3"        // 与文件头版本号保持一致；启动日志会打印，测试前先核对
+ScriptVersion = "v7.5"        // 与文件头版本号保持一致；启动日志会打印，测试前先核对
 BaseW = 960
 BaseH = 2079
 ScreenW = GetScreenX()
@@ -140,9 +172,9 @@ StepDelayMs = 1500            // 坐标点击后的固定缓冲
 // 绿色长条按钮（NEXT / CONFIRM / POWER UP 等）：PoGo 按钮是黄绿到青绿渐变。
 // 容差盒：R 60~170, G 168~242, B 40~200。排除白色文字、浅蓝天空、灰蓝 WAITING 角标、
 // 深青色界面文字（“64”等级、VIEW TRADE 等文字 G<168 进不来）。
-// 注意：好友页功能行的青色图标（SEND GIFT / LOCAL TRADE / BATTLE 等）也落在这个
-// 容差盒内（v7.1 实测），靠 FindPillIn 的“实心连续”验证与好友页锚点区分，
-// 同时 FriendAnchorsVisible 反过来用它定位这排图标。
+// 注意：旧版扁平青色的好友页功能图标（SEND GIFT / LOCAL TRADE / BATTLE 等）也落在
+// 这个容差盒内（v7.1 实测），靠 FindPillIn 的“实心连续”验证排除；v7.5 起
+// FriendAnchorsVisible 用三色谱并集找图标，本谱只是其中之一（覆盖绿色系插画图标）。
 GreenBtnSpec = "78CD73-502537"
 // 橙色 CANCEL 长条按钮（BGR）。只能用 BGR 一种写法，见头部说明第 2 条。
 OrangeSpec = "3BA3F2-304040"
@@ -150,6 +182,12 @@ OrangeSpec = "3BA3F2-304040"
 // 以实测 X 笔画取色 RGB(96,205,176)（工具显示 B0CD60）为锚点放宽；
 // 长按钮已被检测带（88% 起）排除在外，不再靠压低 G 上限去区分。
 CloseSpec = "A5B455-3C3046"
+// 好友页 LOCAL TRADE 插画图标里的饱和蓝（手机机身）：B 179~255, G 112~192, R 30~110。
+// 只给好友页锚点的三色谱并集用（见 IconSpecHitIn）。排除项：白色/浅灰（G、R 超上限）、
+// 中性灰文字（R>110 或 G<112 进不来）、淡天空蓝（G 超上限）、深蓝队徽背景（B<179）。
+// 详情页上的饱和蓝只可能是水系糖果图标等零星元素，且锚点还需 BATTLE 窗与绿长钮
+// 硬安全闸同时放行，单点蓝色不会让锚点在详情页成立。
+FriendBlueSpec = "E39846-302828"
 // 详情页白色大卡片探针（详情页标记的并联条件，不依赖任何按钮）：接近纯白。
 // v7 起必须配合“纵向白色长列”验证使用（见 DetailCardVisible），单点白色不算数。
 WhiteCardSpec = "FAFAFA-080808"
@@ -202,27 +240,33 @@ CardY1 = Int(ScreenH * 48 / 100)
 CardX2 = Int(ScreenW * 86 / 100)
 CardY2 = Int(ScreenH * 56 / 100)
 
-// 好友页锚点窗（v7.2，页面标记的一票否决）：好友资料页中部功能行的 LOCAL TRADE 与
-// BATTLE 两枚青色图标。两种好友页样式（白底/场景背景）下这一行都画在白色面板上、
-// 位置固定：图标行实测高度约 74.5%~78.8%（图标顶 ~73.9%、高 ~5%），LOCAL TRADE 约
-// 35%~43%，BATTLE 约 81%~86%（右缘收在 86% 内，避开 x≥87% 的 LiveFeed 悬浮窗）。
-// 两图标之间 46%~55% 必须净空（无同色），排除横贯整行的长条色块。
-// 详情页上按钮最宽到 ~42%，BATTLE 窗位置是白卡内容区，绝不会出现青绿色，
-// 所以锚点在详情页上恒为不成立——用作否决是安全的（见 FriendAnchorsVisible）。
-FriIconY1 = Int(ScreenH * 745 / 1000)
+// 好友页锚点窗（v7.2 加，v7.5 调整，页面标记的一票否决）：好友资料页中部功能行的
+// LOCAL TRADE 与 BATTLE 两枚图标。各种好友页样式（白底/场景/深色背景）下这一行
+// 都画在白色面板上、位置固定：图标行实测高度约 74%~78.8%（v7.5 检测窗取
+// 73.5%~78.8%：上沿略放宽容裁切偏差；下沿必须停在 78.8%——79.2% 起是图标文字
+// 标签，圈进来的话“REMOTE TRADE”标签左端会伸进间隙窗，文字抗锯齿的中性灰落在
+// CloseSpec 容差内，间隙净空会被误触发、在真好友页上否决锚点）。
+// LOCAL TRADE 约 35%~43%，BATTLE 约 81%~86%（右缘收在 86% 内，避开 x≥87% 的
+// LiveFeed 悬浮窗）。两图标之间 46%~54% 必须净空（三色谱都无命中），排除横贯整行
+// 的长条色块；右缘从 55% 收到 54%，离 REMOTE TRADE 图标左缘（实测 ~56.4%）让出
+// 安全边。详情页上按钮最宽到 ~42%，BATTLE 窗位置是白卡内容区，不会出现成片的
+// 青绿/饱和蓝；即便将来出现零星同色文字，锚点还有“绿长钮硬安全闸”兜底
+//（见 FriendAnchorsVisible），可点按钮的详情页恒被否决。
+FriIconY1 = Int(ScreenH * 735 / 1000)
 FriIconY2 = Int(ScreenH * 788 / 1000)
 FriLtX1 = Int(ScreenW * 35 / 100)
 FriLtX2 = Int(ScreenW * 43 / 100)
 FriBtX1 = Int(ScreenW * 81 / 100)
 FriBtX2 = Int(ScreenW * 86 / 100)
 FriGapX1 = Int(ScreenW * 46 / 100)
-FriGapX2 = Int(ScreenW * 55 / 100)
+FriGapX2 = Int(ScreenW * 54 / 100)
 
 TradeCount = 0
 FoundX = -1
 FoundY = -1
 CardFoundX = -1
 CardFoundY = -1
+ProbeSawGreen = False
 
 // ===================== 基础工具 =====================
 // 旧截图坐标按基准分辨率 960x2079 换算；只用于交易入口和列表第一格这两个固定目标。
@@ -456,32 +500,106 @@ Function DetailCardVisible()
     DetailCardVisible = True
 End Function
 
-// 好友页锚点定位（v7.2）：LOCAL TRADE 图标窗有青绿色 + BATTLE 图标窗有青绿色 +
-// 两窗之间净空，三个条件同时成立 = 确认当前站在好友资料页。
-// 用 GreenBtnSpec 检测——v7.1 实测好友页这排图标的青绿色恰好落在这个容差盒内
-// （当时正是它们骗过了绿长钮探针），现在反过来拿它们当好友页的指纹。
+// 好友图标窗找色（v7.5）：三套色谱任一命中即算“图标在场”。
+// 背景：v7.2 标定时这排图标是扁平青色（GreenBtnSpec 能中）；当前界面已改成彩色
+// 插画——LOCAL TRADE 是蓝色手机（GreenBtnSpec 的 G≥168 且 B≤200 整窗漏检，
+// 实测日志“等待好友页就绪（锚点未现）”就是它），BATTLE 是绿色场景。单一色盒
+// 天然顾此失彼（PR#10 换成 CloseSpec 会反过来漏 B<105 的纯绿），所以并集：
+//   GreenBtnSpec  覆盖黄绿~青绿（旧青色图标 / BATTLE 绿场景）
+//   CloseSpec     覆盖 PoGo 青色（旧青色图标 / 插画中的青蓝过渡色）
+//   FriendBlueSpec 覆盖饱和蓝（LOCAL TRADE 蓝手机机身）
+// 间隙窗复用本函数：三谱都无命中才算净空，口径一致。
+Function IconSpecHitIn(x1, y1, x2, y2)
+    IconSpecHitIn = True
+    If FindSpecIn(x1, y1, x2, y2, GreenBtnSpec) Then
+        Exit Function
+    End If
+    If FindSpecIn(x1, y1, x2, y2, CloseSpec) Then
+        Exit Function
+    End If
+    If FindSpecIn(x1, y1, x2, y2, FriendBlueSpec) Then
+        Exit Function
+    End If
+    IconSpecHitIn = False
+End Function
+
+// 好友页锚点定位（v7.2 加，v7.5 重写）：LOCAL TRADE 图标窗有图标色 + BATTLE 图标窗
+// 有图标色 + 两窗之间净空 + 检测带内没有实心绿色长按钮，四个条件同时成立 =
+// 确认当前站在好友资料页。
+// 图标色用三色谱并集（见 IconSpecHitIn），同时覆盖旧扁平青色图标和新插画图标。
 // 间隙净空排除“横贯整行的长条色块”同时点亮两窗的情况。
-// 已知边界：BATTLE 图标在好友不在附近时会变灰，锚点会不成立——后果只是退回 v7.1
-// 的行为（误报时三连确认后安全退出），不会引入新的误动作。
+// 绿长钮硬安全闸（v7.5 新增）：色谱放宽后，理论上详情页白卡上的零星同色文字有
+// 一点点概率同时点亮两窗+间隙恰好净空；但“通过实心五连窗验证的绿色长按钮”在
+// 好友页上被 v7.2 证明不可能存在（图标 150px 空隙必让整窗落空、“64 LEVEL”过不了
+// 150px 横向验证），而它正是“可点的 POWER UP / EVOLVE 详情页”的确凿证据——
+// 有它就直接否决锚点。这样锚点假阳被压到“按钮全变灰的详情页”一种残余场景，
+// 而那种页面上盲点入口坐标也只是点在灰按钮上无副作用，仍由 NEXT 超时安全兜底。
+// 已知边界：BATTLE 图标在好友不在附近时会变灰，锚点会不成立——后果是走轮前
+// 三连确认分支（v7.5 起只有白卡列时告警放行，不再整轮硬停）。
 Function FriendAnchorsVisible()
     FriendAnchorsVisible = False
-    If FindSpecIn(FriLtX1, FriIconY1, FriLtX2, FriIconY2, GreenBtnSpec) = False Then
+    If IconSpecHitIn(FriLtX1, FriIconY1, FriLtX2, FriIconY2) = False Then
         Exit Function
     End If
-    If FindSpecIn(FriBtX1, FriIconY1, FriBtX2, FriIconY2, GreenBtnSpec) = False Then
+    If IconSpecHitIn(FriBtX1, FriIconY1, FriBtX2, FriIconY2) = False Then
         Exit Function
     End If
-    If FindSpecIn(FriGapX1, FriIconY1, FriGapX2, FriIconY2, GreenBtnSpec) Then
+    If IconSpecHitIn(FriGapX1, FriIconY1, FriGapX2, FriIconY2) Then
+        Exit Function
+    End If
+    If FindPillIn(DetX1, DetY1, DetX2, DetY2, GreenBtnSpec, DetLeftMaxX) Then
         Exit Function
     End If
     FriendAnchorsVisible = True
 End Function
+
+// 单个图标窗的逐色谱诊断文本：绿/青/蓝各自“1(坐标)”或“0”。
+Function DescribeIconWindow(x1, y1, x2, y2)
+    Dim s
+    s = ""
+    If FindSpecIn(x1, y1, x2, y2, GreenBtnSpec) Then
+        s = s & "绿1(" & FoundX & "," & FoundY & ")"
+    Else
+        s = s & "绿0"
+    End If
+    If FindSpecIn(x1, y1, x2, y2, CloseSpec) Then
+        s = s & " 青1(" & FoundX & "," & FoundY & ")"
+    Else
+        s = s & " 青0"
+    End If
+    If FindSpecIn(x1, y1, x2, y2, FriendBlueSpec) Then
+        s = s & " 蓝1(" & FoundX & "," & FoundY & ")"
+    Else
+        s = s & " 蓝0"
+    End If
+    DescribeIconWindow = s
+End Function
+
+// 锚点分解日志（v7.5）：锚点超时时打一次，逐窗×逐色谱标出命中情况。
+// 以前锚点失败只有一句“好友锚点=不成立”，哪条腿断的、窗里实际是什么色系全靠
+// 截图回传猜——这正是 v7.2/v7.4 两轮“换色盒再试”的根因。有了这行日志，
+// 下次再漏认直接按窗微调对应色谱/区域即可。
+Sub LogAnchorDiag()
+    Dim msg
+    msg = "锚点分解：LT窗[" & DescribeIconWindow(FriLtX1, FriIconY1, FriLtX2, FriIconY2) & "]"
+    msg = msg & " BT窗[" & DescribeIconWindow(FriBtX1, FriIconY1, FriBtX2, FriIconY2) & "]"
+    msg = msg & " 间隙[" & DescribeIconWindow(FriGapX1, FriIconY1, FriGapX2, FriIconY2) & "]"
+    If FindPillIn(DetX1, DetY1, DetX2, DetY2, GreenBtnSpec, DetLeftMaxX) Then
+        msg = msg & " 绿长钮闸[有(" & PillFoundX & "," & PillFoundY & ")]"
+    Else
+        msg = msg & " 绿长钮闸[无]"
+    End If
+    TracePrint msg & "（成立需要：LT、BT 各至少一个1，间隙全0，绿长钮闸=无）"
+End Sub
 
 // 宝可梦详情页是否开着：左侧贴左的绿色长按钮（POWER UP / EVOLVE / CHANGE FORM）
 // 或右侧大白卡“纵向长列”探针（v7 加严版），二者有一即可；但好友页锚点成立时
 // 一票否决（v7.2）——好友页存在“白底样式”（人物背景整片纯白），右侧白色长列在
 // 这种样式上天然成立，白色本身已无法区分两页，而锚点在详情页上恒为不成立
 // （见 FriendAnchorsVisible 的区域注释），否决不会吞掉真详情页。
+// v7.5 起这条安全性有了结构保证：锚点内置“绿长钮硬安全闸”，FindPillIn 命中时
+// 锚点必为 False——绿钮成立的详情页永远不可能被否决；白卡-only 的详情页仍靠
+// BATTLE 窗的空白区保证锚点不成立。
 // 只看绿按钮是不够的——POWER UP 会因星尘/糖果不足变灰、满级宝可梦可能没有任何
 // 绿色按钮（codex review 指出的边界），白卡不依赖按钮状态。这个标记的硬性要求是
 // “在好友页上必须为 False”：v5（64 LEVEL 文字）、v6（白卡单段探针）、v7.1（图标行
@@ -511,6 +629,7 @@ End Function
 Function ProbeAndLogMarker(tag)
     Dim g, w, f, msg
     g = FindPillIn(DetX1, DetY1, DetX2, DetY2, GreenBtnSpec, DetLeftMaxX)
+    ProbeSawGreen = g             // 给 PreEntryGate 分流用：绿长钮才是不可逆风险的证据
     w = DetailCardVisible()
     f = False
     If g Then
@@ -614,31 +733,57 @@ Function WaitLeftFriendPage()
     Loop While waitedMs < LeaveFriendMaxSec * 1000
 End Function
 
-// 轮前闸门（v7.3 判定反转）：默认相信“此刻就该在好友页”——首轮是使用要求，
-// 后续轮收尾已验证过“标记消失”——所以不再默认怀疑“详情页没关”，
+// 轮前闸门（v7.3 判定反转，v7.5 三连确认分流）：默认相信“此刻就该在好友页”——
+// 首轮是使用要求，后续轮收尾已验证过“标记消失”——所以不再默认怀疑“详情页没关”，
 // 改为用锚点正向确认：锚点一出现立即放行，且放行是构造性安全的（入口坐标
 // 点的就是刚确认过的 LOCAL TRADE 图标本尊）。
 // 锚点超时才进入怀疑分支（v5~v7.2 的三次误报全发生在旧的怀疑式预检上）：
-// 标记间隔 0.8s/2s 三连确认 —— 三次都成立大概率真有残留详情页，安全退出
-// （防入口坐标盲点 POWER UP / EVOLVE，消耗星尘甚至误进化，不可逆）；
-// 没被三连确认（如好友不在附近 BATTLE 变灰、锚点失效）则告警后照常放行，
-// 点错页面由“等不到 NEXT 超时”安全兜底。全程绝不补点 X（v5/v6 事故教训）。
+// 先打一行“锚点分解”（哪条腿断了、窗里什么色系，直接可校准），再做
+// 0.8s/2s 标记三连确认，并按确认时有没有绿长钮分流：
+//   - 三连确认且出现过绿长钮：真·可点按钮的详情页，安全退出（防入口坐标盲点
+//     POWER UP / EVOLVE，消耗星尘甚至误进化，不可逆）；
+//   - 三连确认但全程只有白卡列：可能是灰按钮/满级详情页残留，也可能是好友页
+//     白色面板 + 锚点漏认（v7.5 当轮实测就是后者）。无绿钮即无不可逆风险——
+//     真是详情页时入口坐标只会点在灰按钮/白卡上无副作用——所以告警后放行，
+//     页面不对由“等不到 NEXT 超时”安全兜底，不再整轮硬停；
+//   - 没被三连确认（如好友不在附近 BATTLE 变灰、锚点失效）：告警后照常放行。
+// 全程绝不补点 X（v5/v6 事故教训）。
 Sub PreEntryGate()
+    Dim confirmed, sawGreenAny
     If WaitFriendPageReady() Then
         TracePrint "好友页锚点就绪，直接开始本轮"
         Exit Sub
     End If
-    TracePrint "锚点超时未出现（好友不在附近 BATTLE 变灰？页面没回来？），转入标记三连确认"
+    TracePrint "锚点超时未出现（好友不在附近 BATTLE 变灰？图标改版色谱漏认？页面没回来？），转入标记三连确认"
+    LogAnchorDiag()
+    confirmed = False
+    sawGreenAny = False
     If ProbeAndLogMarker("轮前") Then
+        If ProbeSawGreen Then
+            sawGreenAny = True
+        End If
         Delay 800
         If ProbeAndLogMarker("轮前复测1") Then
+            If ProbeSawGreen Then
+                sawGreenAny = True
+            End If
             Delay 2000
             If ProbeAndLogMarker("轮前复测2") Then
-                TracePrint "连续 3 次检测到详情页标记（好友页锚点也不在），为安全停止脚本：不补点 X，也不进交易流程（入口坐标会盲点到详情页的 POWER UP / EVOLVE，可能消耗星尘甚至误进化）"
-                TracePrint "屏幕上真有没关的详情页 -> 请手动点 X 关闭后重新运行；此刻屏幕若是好友页 -> 探针误报且锚点没认出好友页，请把上面三行标记诊断连同截图发回校准"
-                ExitScript
+                If ProbeSawGreen Then
+                    sawGreenAny = True
+                End If
+                confirmed = True
             End If
         End If
+    End If
+    If confirmed Then
+        If sawGreenAny Then
+            TracePrint "三连确认存在绿色长按钮的详情页（POWER UP / EVOLVE 可点状态），为安全停止脚本：不补点 X，也不进交易流程（入口坐标会盲点到按钮，可能消耗星尘甚至误进化）"
+            TracePrint "请手动点 X 关闭详情页后重新运行；若屏幕明明是好友页，请把上面的锚点分解 + 三行标记诊断连同截图发回校准"
+            ExitScript
+        End If
+        TracePrint "三连确认只有白卡列成立、无绿长钮：可能是灰按钮/满级的详情页残留，也可能是好友页白色面板 + 锚点漏认。无绿钮即无耗星尘/误进化风险，按好友页放行；若页面真不对会卡在等 NEXT 然后安全退出，请把上面的锚点分解日志发回校准"
+        Exit Sub
     End If
     TracePrint "未确认出详情页残留，按好友页继续本轮（若随后卡在等 NEXT 超时，说明当前页面不对，会安全退出）"
 End Sub
