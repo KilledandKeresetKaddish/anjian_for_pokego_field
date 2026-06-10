@@ -1,6 +1,6 @@
 // Pokemon GO 自动交易脚本（按键精灵手机助手 / iPhone 13 Pro, iOS 16.3, 竖屏）
 // =====================================================================
-// 版本：v7.2（2026-06-10）
+// 版本：v7.3（2026-06-10）
 // 启动日志第一行会打印本版本号——每次测试前先核对日志里的版本，避免误测旧版（出过一次）。
 // 版本历史：
 //   v1  逐像素 GetPixelColor 扫描慢到等于卡死 -> 改原生 FindColor 区域找色
@@ -26,6 +26,14 @@
 //           区分两页 -> 新增“好友页锚点”（LOCAL TRADE + BATTLE 双图标 + 间隙净空）
 //           对页面标记一票否决；BATTLE 锚点窗位于按钮永远够不着的 81%~86%，
 //           在详情页上恒为不成立，否决不会吞掉真详情页。
+//   v7.3 开局判定反转 + 等待全面检测驱动（用户反馈：开局本就不该在详情页，
+//        固定等待也太多）：轮前不再默认怀疑“详情页没关”——使用方式本就要求从
+//        好友页开始、收尾也已验证过“标记消失”——改为正向确认好友页：锚点
+//        （LOCAL TRADE + BATTLE）一出现立即放行，入口点的就是刚确认过的图标本尊；
+//        锚点超时才转标记三连确认（真残留仍安全退出；锚点失效如 BATTLE 变灰则
+//        告警后放行，由 NEXT 超时兜底）。固定等待替换：点入口后 4 秒盲等 ->
+//        “锚点消失=已切页”检测（没切走自动补点入口）；收尾后 5 秒盲等 -> 删除，
+//        并入下轮开头的“锚点就绪”检测；删 WaitSeconds 及其逐秒刷屏日志。
 // =====================================================================
 //
 // ===== 核心思路 =====
@@ -56,8 +64,9 @@
 //    v7 教训：这个标记在“好友页”上必须为 False，否则脚本会把好友页自己的 X 点掉。
 //    v6 的白卡探针只验证下方 40~90px 一小段，被好友页 48%~56% 人物场景里的白色元素
 //    （云朵/白色伙伴宝可梦/白色衣物）骗过，开局直接误判成详情页；v7 改为纵向长列
-//    （场景元素下缘是天空蓝/地面色，四段过不全），且轮前复查绝不补点 X：
-//    打印诊断，三连确认残留就安全退出、提示手动收尾（见 PreEntryGuard）。
+//    （场景元素下缘是天空蓝/地面色，四段过不全），且轮前绝不补点 X：
+//    v7.3 起正常轮次由锚点正向确认放行，锚点超时才打诊断做三连确认，
+//    确认残留就安全退出、提示手动收尾（见 PreEntryGate）。
 //    v7.2 教训：好友页还有“白底样式”（人物背景整片纯白 + 队徽水印），右侧白色长列
 //    在这种样式上天然成立（实测 白卡列=有(718,997)），白色本身已无法区分两页。
 //    所以页面标记新增“好友页锚点”一票否决（见 FriendAnchorsVisible）：LOCAL TRADE
@@ -77,19 +86,21 @@
 //
 // ===== 使用方式 =====
 // 从好友资料页开始运行（能看到 SEND GIFT / LOCAL TRADE / REMOTE TRADE 的页面）。
-// 流程：LOCAL TRADE -> 短暂缓冲后点第一只宝可梦（NEXT 没出现会自动重选）
+// 流程：等好友页锚点就绪（默认就该在好友页：锚点一出现立即开始，无固定等待；
+//       锚点超时才做“标记三连确认”，确认有残留详情页则安全退出，绝不乱点）
+//      -> LOCAL TRADE（“锚点消失=已切到列表”检测驱动，没切走自动补点一次）
+//      -> 点第一只宝可梦（NEXT 没出现会自动重选）
 //      -> 绿色 NEXT 出现就点（验证页面切走） -> 对方选好后绿色 CONFIRM 出现就点
 //      -> 验证变橙色 CANCEL（对方先确认导致橙色一闪而过也有兜底判定）
 //      -> 橙色消失 = 双方确认、动画开始 -> 等“详情页标记”出现 -> 找底部 X 点掉
-//      -> 验证“详情页标记”消失 -> 回好友页进入下一轮
-//      （轮前打印标记诊断：干净就继续；三连确认有残留详情页则安全退出，绝不点 X）。
+//      -> 验证“详情页标记”消失 -> 直接进入下一轮（开头的锚点就绪等待就是回页缓冲）。
 
 Dim ScreenW, ScreenH
 Dim BaseW, BaseH
 Dim MaxTrades, TradeCount
 Dim StepDelayMs
-Dim ListSettleSec, SelectRetryIntervalSec, WaitNextMaxSec, NextRetryMaxSec
-Dim WaitPartnerSelectSec, WaitPartnerConfirmSec, WaitCompleteMaxSec, ReturnSettleSec
+Dim FriendReadyMaxSec, LeaveFriendMaxSec, SelectRetryIntervalSec, WaitNextMaxSec, NextRetryMaxSec
+Dim WaitPartnerSelectSec, WaitPartnerConfirmSec, WaitCompleteMaxSec
 Dim GreenBtnSpec, OrangeSpec, CloseSpec, WhiteCardSpec
 Dim NextX1, NextY1, NextX2, NextY2, NextLeftMaxX
 Dim ConfX1, ConfY1, ConfX2, ConfY2, ConfLeftMaxX
@@ -104,7 +115,7 @@ Dim CloseFoundX, CloseFoundY, CloseTapX, CloseTapY
 Dim CardFoundX, CardFoundY
 Dim ScriptVersion
 
-ScriptVersion = "v7.2"        // 与文件头版本号保持一致；启动日志会打印，测试前先核对
+ScriptVersion = "v7.3"        // 与文件头版本号保持一致；启动日志会打印，测试前先核对
 BaseW = 960
 BaseH = 2079
 ScreenW = GetScreenX()
@@ -112,14 +123,17 @@ ScreenH = GetScreenY()
 
 // ===================== 可调参数 =====================
 MaxTrades = 20                // 最多交易轮数；0 = 无限循环（第一次使用不建议）
-ListSettleSec = 4             // 点 LOCAL TRADE 后的短缓冲；列表慢没关系，下一步会自动重选
+FriendReadyMaxSec = 10        // 轮前等“好友页锚点”出现的上限：检测驱动，一出现立即开始本轮；
+                              // 超时才转入标记三连确认兜底。好友不在附近时 BATTLE 图标变灰、
+                              // 锚点永远不成立——那种场景每轮会等满这个秒数，可按需调小
+LeaveFriendMaxSec = 8         // 点 LOCAL TRADE 后等“锚点消失=已切去选宝可梦列表”的上限；
+                              // 超时自动补点一次入口（取代旧版 4 秒盲等）
 SelectRetryIntervalSec = 6    // NEXT 没出现时，每隔几秒再点一次第一只宝可梦（兼容列表加载慢）
 WaitNextMaxSec = 120          // 等 NEXT 按钮出现的最长秒数（上限，按钮一出现就点）
 NextRetryMaxSec = 45          // 点了 NEXT 但页面没切走时，持续重点 NEXT 的最长秒数
 WaitPartnerSelectSec = 240    // 等对方选好宝可梦 + CONFIRM 可点 + 确认生效（变橙）的最长秒数
 WaitPartnerConfirmSec = 300   // 自己确认后（橙色 CANCEL 期间）等对方确认的最长秒数；期间只检测、不乱点
 WaitCompleteMaxSec = 150      // 双方确认后，等动画放完 + 详情页出现 + X 点掉 + 标记消失的总上限
-ReturnSettleSec = 5           // 详情页确认关闭后回好友页的短缓冲（轮前还会打印标记诊断）
 StepDelayMs = 1500            // 坐标点击后的固定缓冲
 
 // ===================== 颜色定义（BGR + 偏色） =====================
@@ -231,15 +245,6 @@ Sub TapPoint(x, y, note)
     Tap Int(x), Int(y)
     Delay 800
 End Sub
-
-Function WaitSeconds(sec, reason)
-    Dim i
-    For i = 1 To sec
-        TracePrint "Wait " & reason & " " & i & "/" & sec & " sec"
-        Delay 1000
-    Next
-    WaitSeconds = True
-End Function
 
 // 在区域内找一种颜色（原生 FindColor，毫秒级）。找到返回 True 并写入 FoundX/FoundY。
 Function FindSpecIn(x1, y1, x2, y2, spec)
@@ -569,32 +574,73 @@ Sub TapCloseFallback(idx)
     TapPoint CloseFallbackX, fy, "完成页 X（比例兜底档位 " & m & "）"
 End Sub
 
-// 轮前复查（v7 起绝不点击任何东西；v7.1 起确认残留即安全退出）：
-// 每轮开始时人应当站在好友页上。两类风险都必须从机制上排除：
-// - 不能补点 X：v5（“64 LEVEL”文字）和 v6（白卡单段探针）都发生过“标记在好友页
-//   误报 -> 去找 X -> 找到的恰是好友页底部那颗真 X（实测 485,1949）-> 把好友资料页
-//   点关、整轮报废”的事故。
-// - 也不能告警后继续走主流程（v7.0 的做法，codex review 指出）：若详情页真的残留
-//  （上一轮收尾失败/中途被打断），入口坐标 (386,1555) 落在详情页上正是 POWER UP /
-//   EVOLVE 一带，盲点过去可能消耗星尘、甚至把刚收到的宝可梦进化掉——不可逆。
-// 所以：标记成立时间隔 800ms / 2s 共测三次（防瞬时干扰），三次都成立就打印
-// 手动收尾指引后 ExitScript。误报场景下这三行诊断（含命中坐标）正是校准所需。
-// 标记干净（绝大多数轮次第一次就是“无/无”）则零延时直接进交易流程。
-// v7.2 起“标记成立”已含好友页锚点否决：站在好友页上时（即使探针误报）锚点会把
-// 标记压成 False、直接放行进交易流程——放行是安全的：锚点成立本身就证明了
-// LOCAL TRADE 图标就在入口坐标那里，点下去点的就是它。
-Sub PreEntryGuard()
+// 等好友页就绪（v7.3，检测驱动）：轮询好友页锚点，一出现立即返回 True。
+// 取代了两段固定等待——旧版收尾后的 5 秒盲等、以及开局对详情页的怀疑式预检：
+// 正常轮次页面 1~2 秒就绪，开销接近零；首轮则给手动导航留出宽限。
+// 超时返回 False，由调用方转入“标记三连确认”兜底分支。
+Function WaitFriendPageReady()
+    Dim waitedMs
+    WaitFriendPageReady = False
+    waitedMs = 0
+    Do
+        If FriendAnchorsVisible() Then
+            WaitFriendPageReady = True
+            Exit Function
+        End If
+        Delay 600
+        waitedMs = waitedMs + 600
+        If waitedMs Mod 3000 = 0 Then
+            TracePrint "等待好友页就绪（锚点未现）" & Int(waitedMs / 1000) & "/" & FriendReadyMaxSec & " 秒"
+        End If
+    Loop While waitedMs < FriendReadyMaxSec * 1000
+End Function
+
+// 点完交易入口后：等“好友页锚点消失”= 已切去选宝可梦列表（检测驱动，
+// 取代旧版固定 4 秒盲等；通常 1 秒内切走）。超时返回 False，调用方补点一次入口。
+// 注意走兜底分支进来时锚点本来就不可见（如 BATTLE 变灰），会立即返回 True——
+// 等同旧版盲等后直接继续，后续由 NEXT 流程自动重选/超时兜底。
+Function WaitLeftFriendPage()
+    Dim waitedMs
+    WaitLeftFriendPage = False
+    waitedMs = 0
+    Do
+        If FriendAnchorsVisible() = False Then
+            WaitLeftFriendPage = True
+            Delay 800
+            Exit Function
+        End If
+        Delay 500
+        waitedMs = waitedMs + 500
+    Loop While waitedMs < LeaveFriendMaxSec * 1000
+End Function
+
+// 轮前闸门（v7.3 判定反转）：默认相信“此刻就该在好友页”——首轮是使用要求，
+// 后续轮收尾已验证过“标记消失”——所以不再默认怀疑“详情页没关”，
+// 改为用锚点正向确认：锚点一出现立即放行，且放行是构造性安全的（入口坐标
+// 点的就是刚确认过的 LOCAL TRADE 图标本尊）。
+// 锚点超时才进入怀疑分支（v5~v7.2 的三次误报全发生在旧的怀疑式预检上）：
+// 标记间隔 0.8s/2s 三连确认 —— 三次都成立大概率真有残留详情页，安全退出
+// （防入口坐标盲点 POWER UP / EVOLVE，消耗星尘甚至误进化，不可逆）；
+// 没被三连确认（如好友不在附近 BATTLE 变灰、锚点失效）则告警后照常放行，
+// 点错页面由“等不到 NEXT 超时”安全兜底。全程绝不补点 X（v5/v6 事故教训）。
+Sub PreEntryGate()
+    If WaitFriendPageReady() Then
+        TracePrint "好友页锚点就绪，直接开始本轮"
+        Exit Sub
+    End If
+    TracePrint "锚点超时未出现（好友不在附近 BATTLE 变灰？页面没回来？），转入标记三连确认"
     If ProbeAndLogMarker("轮前") Then
         Delay 800
         If ProbeAndLogMarker("轮前复测1") Then
             Delay 2000
             If ProbeAndLogMarker("轮前复测2") Then
-                TracePrint "开局连续 3 次检测到详情页标记（好友页锚点均未否决），为安全停止脚本：不补点 X，也不进交易流程（入口坐标会盲点到详情页的 POWER UP / EVOLVE，可能消耗星尘甚至误进化）"
+                TracePrint "连续 3 次检测到详情页标记（好友页锚点也不在），为安全停止脚本：不补点 X，也不进交易流程（入口坐标会盲点到详情页的 POWER UP / EVOLVE，可能消耗星尘甚至误进化）"
                 TracePrint "屏幕上真有没关的详情页 -> 请手动点 X 关闭后重新运行；此刻屏幕若是好友页 -> 探针误报且锚点没认出好友页，请把上面三行标记诊断连同截图发回校准"
                 ExitScript
             End If
         End If
     End If
+    TracePrint "未确认出详情页残留，按好友页继续本轮（若随后卡在等 NEXT 超时，说明当前页面不对，会安全退出）"
 End Sub
 
 // 选完宝可梦后：等绿色 NEXT 出现 -> 点 -> 验证页面切走；没切走就限时重点。
@@ -787,9 +833,13 @@ End Function
 Sub OneTrade()
     TracePrint "===== Trade round " & (TradeCount + 1) & " start ====="
 
-    PreEntryGuard()
+    PreEntryGate()
     TapTradeEntry()
-    WaitSeconds ListSettleSec, "list settle"
+    If WaitLeftFriendPage() = False Then
+        TracePrint "点了 LOCAL TRADE 但 " & LeaveFriendMaxSec & " 秒后好友页锚点仍在：可能没点中，补点一次"
+        TapTradeEntry()
+        WaitLeftFriendPage()
+    End If
     TapFirstPokemon()
 
     If SelectAndPressNext() = False Then
@@ -811,7 +861,8 @@ Sub OneTrade()
         ExitScript
     End If
 
-    WaitSeconds ReturnSettleSec, "return settle"
+    // 不再固定缓冲 5 秒回好友页（v7.3）：下一轮开头的“锚点就绪”等待
+    // 就是检测驱动的缓冲，页面一回来立即开始。
 
     TradeCount = TradeCount + 1
     TracePrint "===== Trade round " & TradeCount & " done ====="
