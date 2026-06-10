@@ -1,53 +1,55 @@
 // Pokemon GO 自动交易脚本（按键精灵手机助手 / iPhone 13 Pro, iOS 16.3, 竖屏）
 //
-// ===== 本次重写为什么能解决“选完第一只宝可梦后卡住、不点 NEXT” =====
-// 旧版用 GetPixelColor 写了一个逐像素双重循环来扫区域，每个采样点要调 3 次 GetPixelColor，
-// 扫一遍 NEXT 区域就是两万多次屏幕取色调用。在手机助手上每次取色都是一次较慢的屏幕查询，
-// 所以一遍扫描要几分钟到几十分钟，而且日志要扫完一遍才打印——表现就是“停在选完宝可梦的页面不动”。
-// （NEXT 是流程里第一个用颜色扫描的步骤，前面 LOCAL TRADE / 选宝可梦都是普通坐标点击，所以恰好卡在这里。）
-//
-// 现在改用按键精灵文档（help.anjian.com）的原生区域找色命令，一次调用毫秒级完成整个区域扫描：
+// ===== 核心思路 =====
+// 用文档（help.anjian.com）的原生区域找色命令做状态检测，一次调用毫秒级完成整个区域扫描：
 //     FindColor 左上X, 左上Y, 右下X, 右下Y, "BGR颜色-偏色", 方向, 相似度, intX, intY
-// 未找到时 intX / intY 返回 -1。颜色是 BGR 十六进制（注意不是 RGB）。
+// 未找到时 intX / intY 返回 -1。颜色是 BGR 十六进制（实测确认引擎按 BGR 解析；
+// 工具取色器显示的 B0CD60 = RGB(96,205,176) 也是 BGR 口径）。
+// 每一步都是“等待状态出现 -> 点击 -> 验证状态切换”，几乎没有固定硬等；
+// 任何一步限时内等不到预期状态就打日志安全退出，绝不盲点。
 //
-// ===== 防误点设计 =====
-// 1. 长条按钮（NEXT / CONFIRM / 橙色 CANCEL）要求“横向延伸 + 纵向延伸”双重验证：
-//    找到候选色点后，再验证它右侧 36~170px 和下方 45~90px 仍是同色。
-//    文字、细图标只有横向或零散匹配，过不了纵向验证，不会被当成按钮。
-//    候选点验证失败不放弃：从该点下方继续搜索区域余下部分，
-//    所以按钮上方出现同色杂点（贴图、特效、文字）也挡不住真按钮。
-// 2. CONFIRM/CANCEL 还要求色点在屏幕左侧 25% 内（按钮贴屏幕左边），
-//    这样交易页中间的金色“+XX 星尘/km”文字、右下宝可梦卡片、右侧对方的 CONFIRMED 角标都不会误判。
-// 3. 颜色只按 BGR 一种口径解析（与开发文档一致）。绝不能为“兼容 RGB 解析”同时检测 R/B 互换色：
-//    橙色互换后就是蓝色，交易页大面积蓝色背景会整页误中“橙色 CANCEL”（实测翻车，已删除）。
-// 4. 完成页 X 要同时满足三件事才会去点：橙色 CANCEL 已消失（双方都确认）；
-//    白色卡片探针确认“收到的宝可梦详情页”已出现（交易页/动画阶段绝不碰底部按钮）；
-//    X 检测带收窄到底部 88%~98% 且通过“排长条”验证——POWER UP / CHANGE FORM 这类
-//    浅青绿长按钮（Furfrou 等有第二颗按钮的宝可梦，实测踩坑）不会再被当成 X。
-// 5. 每一步都是“等待状态出现 -> 点击 -> 验证状态切换”，限时内等不到就打日志安全退出，绝不盲点。
+// ===== 防误点设计（多轮实测迭代） =====
+// 1. 长条按钮（NEXT / CONFIRM / 橙色 CANCEL / 详情页 POWER UP）要求三重验证：
+//    色点贴左（位置约束）+ 右侧 60~170px 仍是同色（“64”等级数字、金色 +XX 文本只有 ~55px 宽，
+//    过不了 60px 起跳的横向验证）+ 下方 45~90px 仍是同色（文字行没有这个纵向厚度）。
+//    候选点验证失败不放弃：从该点下方继续搜索（FindColor 只返回最上面的匹配点，
+//    不续搜的话一个同色杂点就会一直挡住下方的真按钮）。
+// 2. 颜色只按 BGR 一种口径解析。绝不能为“兼容 RGB”同时检测 R/B 互换色：
+//    橙色互换后就是蓝色，交易页大面积蓝背景会整页误中（实测翻车，已删除）。
+// 3. “宝可梦详情页是否开着”用 POWER UP / EVOLVE / CHANGE FORM 绿色长按钮做页面标记：
+//    交易完成后的收尾全部以这个标记为准——标记在才找 X、标记消失才算关闭成功。
+//    之前用“X 还在不在”做验证是错的：好友页底部也有一颗同款 X（实测就在同一位置），
+//    永远验证不过。现在好友页上这个标记为 False，根本不会去碰任何 X。
+// 4. 完成页 X 的圆钮判定：候选点正下方窄列 25~85px 必须仍是同色（X 是实心青色圆钮）。
+//    GYMS & RAIDS 选中页签的细下划线压在检测带顶上时（实测正是它抢走了候选点，
+//    导致一直点到 385,1874 而真 X 在 485,1949），正下方是白底，一票否决。
+//    左右 130px 以外不允许还有同色，排除 300px+ 的长按钮。
+// 5. X 找不到时的兜底：按实测 X 中心 (485,1949)@960x2079 换算成屏幕百分比 (50.5%, 93.7%)
+//    直接点一次。这是比例坐标，不是写死像素，换其他尺寸的 iPhone 仍然成立。
 //
 // ===== 使用方式 =====
 // 从好友资料页开始运行（能看到 SEND GIFT / LOCAL TRADE / REMOTE TRADE 的页面）。
-// 流程：LOCAL TRADE -> 等列表 -> 点第一只宝可梦 -> 绿色 NEXT 出现就点（验证页面切走）
-//      -> 等对方选好、左侧绿色 CONFIRM 出现就点 -> 验证变橙色 CANCEL（=确认成功）
-//      -> 橙色还在就耐心等对方确认 -> 橙色消失 = 交易动画开始
-//      -> 白卡探针确认收到宝可梦的详情页已出现 -> 找到底部深青色 X，点掉并验证消失
-//      -> 等回到好友页 -> 下一轮。
+// 流程：LOCAL TRADE -> 短暂缓冲后点第一只宝可梦（NEXT 没出现会自动重选）
+//      -> 绿色 NEXT 出现就点（验证页面切走） -> 对方选好后绿色 CONFIRM 出现就点
+//      -> 验证变橙色 CANCEL（对方先确认导致橙色一闪而过也有兜底判定）
+//      -> 橙色消失 = 双方确认、动画开始 -> 等“详情页标记”出现 -> 找底部 X 点掉
+//      -> 验证“详情页标记”消失 -> 回好友页进入下一轮（轮前还会复查标记防残留）。
 
 Dim ScreenW, ScreenH
 Dim BaseW, BaseH
 Dim MaxTrades, TradeCount
 Dim StepDelayMs
-Dim WaitPokemonListSec, SelectRetryIntervalSec, WaitNextMaxSec, NextRetryMaxSec
-Dim WaitPartnerSelectSec, WaitPartnerConfirmSec, WaitCompleteMaxSec, WaitReturnSec
-Dim GreenBtnSpec, OrangeSpec, CloseSpec, WhiteCardSpec
+Dim ListSettleSec, SelectRetryIntervalSec, WaitNextMaxSec, NextRetryMaxSec
+Dim WaitPartnerSelectSec, WaitPartnerConfirmSec, WaitCompleteMaxSec, ReturnSettleSec
+Dim GreenBtnSpec, OrangeSpec, CloseSpec
 Dim NextX1, NextY1, NextX2, NextY2, NextLeftMaxX
 Dim ConfX1, ConfY1, ConfX2, ConfY2, ConfLeftMaxX
 Dim CloseX1, CloseY1, CloseX2, CloseY2
+Dim CloseFallbackX, CloseFallbackY
+Dim DetX1, DetY1, DetX2, DetY2, DetLeftMaxX
 Dim FoundX, FoundY
 Dim PillFoundX, PillFoundY, PillTapX, PillTapY
 Dim CloseFoundX, CloseFoundY, CloseTapX, CloseTapY
-Dim LastCloseTapX, LastCloseTapY
 
 BaseW = 960
 BaseH = 2079
@@ -56,38 +58,35 @@ ScreenH = GetScreenY()
 
 // ===================== 可调参数 =====================
 MaxTrades = 20                // 最多交易轮数；0 = 无限循环（第一次使用不建议）
-WaitPokemonListSec = 12       // 点 LOCAL TRADE 后等宝可梦列表加载的秒数
-SelectRetryIntervalSec = 10   // 选完宝可梦后 NEXT 一直没出现时，每隔几秒再点一次第一只宝可梦（列表可能加载慢）
+ListSettleSec = 4             // 点 LOCAL TRADE 后的短缓冲；列表慢没关系，下一步会自动重选
+SelectRetryIntervalSec = 6    // NEXT 没出现时，每隔几秒再点一次第一只宝可梦（兼容列表加载慢）
 WaitNextMaxSec = 120          // 等 NEXT 按钮出现的最长秒数（上限，按钮一出现就点）
 NextRetryMaxSec = 45          // 点了 NEXT 但页面没切走时，持续重点 NEXT 的最长秒数
 WaitPartnerSelectSec = 240    // 等对方选好宝可梦 + CONFIRM 可点 + 确认生效（变橙）的最长秒数
 WaitPartnerConfirmSec = 300   // 自己确认后（橙色 CANCEL 期间）等对方确认的最长秒数；期间只检测、不乱点
-WaitCompleteMaxSec = 120      // 双方确认后等交易动画放完、完成页 X 出现的最长秒数
-WaitReturnSec = 10            // 点掉 X 后等回到好友页的秒数
+WaitCompleteMaxSec = 150      // 双方确认后，等动画放完 + 详情页出现 + X 点掉 + 标记消失的总上限
+ReturnSettleSec = 5           // 详情页确认关闭后回好友页的短缓冲（轮前还有标记复查兜底）
 StepDelayMs = 1500            // 坐标点击后的固定缓冲
 
 // ===================== 颜色定义（BGR + 偏色） =====================
-// 绿色长条按钮（NEXT / CONFIRM）：PoGo 按钮是黄绿到青绿渐变。
-// 容差盒：R 60~170, G 168~242, B 40~200。排除白色文字、浅蓝天空、灰蓝 WAITING 角标、浅绿列表底色。
+// 绿色长条按钮（NEXT / CONFIRM / POWER UP 等）：PoGo 按钮是黄绿到青绿渐变。
+// 容差盒：R 60~170, G 168~242, B 40~200。排除白色文字、浅蓝天空、灰蓝 WAITING 角标、
+// 深青色界面文字（“64”等级、VIEW TRADE 等文字 G<168 进不来）。
 GreenBtnSpec = "78CD73-502537"
-// 橙色 CANCEL 长条按钮（BGR）。注意：这里只能用 BGR 一种写法。
-// 不要再加 R/B 互换的“兼容”色——橙色互换后就是蓝色（B 178~255, R 11~107），
-// 交易页大面积浅蓝背景会整页误中，导致还没点 CONFIRM 就误报“我方确认已生效”（实测翻车）。
+// 橙色 CANCEL 长条按钮（BGR）。只能用 BGR 一种写法，见头部说明第 2 条。
 OrangeSpec = "3BA3F2-304040"
-// 完成页 X 圆钮的深青色圆环（BGR）：R 8~136, G 112~196, B 102~198。
-// G 上限有意压低：POWER UP / CHANGE FORM 等浅青绿长按钮的主体 G≥195，基本不会进来；
-// 就算渐变边缘擦进容差，FindCloseIn 的“排长条”验证也会把 300px+ 的长按钮拒掉。
-CloseSpec = "969A48-302A40"
-// “收到的宝可梦详情页”白色卡片探针：用于确认交易动画已结束、详情页真的出现了。
-WhiteCardSpec = "F8F8F8-090909"
+// 完成页 X 圆钮的青色（BGR）：R 15~155, G 132~228, B 105~225。
+// 以实测 X 笔画取色 RGB(96,205,176)（工具显示 B0CD60）为锚点放宽；
+// 长按钮已被检测带（88% 起）排除在外，不再靠压低 G 上限去区分。
+CloseSpec = "A5B455-3C3046"
 
 // ===================== 检测区域（按屏幕百分比，分辨率无关） =====================
-// NEXT：底部中间长条（实测约在高度 82%~88%、宽度 20%~77%），带上下各留 ~2.5% 余量。
+// NEXT：底部中间长条（实测约在高度 82%~88%、宽度 20%~77%）。
 NextX1 = Int(ScreenW * 12 / 100)
 NextY1 = Int(ScreenH * 80 / 100)
 NextX2 = Int(ScreenW * 80 / 100)
 NextY2 = Int(ScreenH * 91 / 100)
-NextLeftMaxX = Int(ScreenW * 35 / 100)      // NEXT 按钮左缘约在 20%，色点必须出现在左 35% 内才算 NEXT
+NextLeftMaxX = Int(ScreenW * 35 / 100)      // NEXT 按钮左缘约在 20%，色点必须出现在左 35% 内
 
 // CONFIRM / 橙色 CANCEL：贴屏幕左侧的中部长条（约高度 48%~55%）。
 // y 上限取 59%：再往下是左下角自己的宝可梦模型，避免把绿色宝可梦当按钮。
@@ -97,20 +96,27 @@ ConfX2 = Int(ScreenW * 44 / 100)
 ConfY2 = Int(ScreenH * 59 / 100)
 ConfLeftMaxX = Int(ScreenW * 25 / 100)      // 按钮贴左边，色点必须在左 25% 内
 
-// 交易完成详情页底部中间的 X。检测带收窄到 88%~98%：
-// 实测 X 在 ~93%-97%，而 Furfrou 等宝可梦的第二颗按钮 CHANGE FORM 在 ~80%-85%，
-// 收窄后这类浅青绿长按钮整体落在带外，从源头排除（之前 80% 起步时被点中过）。
-// x 限制在 36%~64%，避开右下角的菜单(≡)按钮。
-CloseX1 = Int(ScreenW * 36 / 100)
+// 完成页底部中间的 X：实测中心 (485,1949)@960x2079 = (50.5%, 93.7%)。
+// 带顶 88% 会擦到 GYMS & RAIDS 页签下划线（~88%），由“正下方窄列”验证排除。
+CloseX1 = Int(ScreenW * 38 / 100)
 CloseY1 = Int(ScreenH * 88 / 100)
-CloseX2 = Int(ScreenW * 64 / 100)
+CloseX2 = Int(ScreenW * 62 / 100)
 CloseY2 = Int(ScreenH * 98 / 100)
+// 比例兜底点（来自实测 485/960=50.5%、1949/2079=93.7%，非写死像素，可适配其他尺寸 iPhone）
+CloseFallbackX = Int(ScreenW * 505 / 1000)
+CloseFallbackY = Int(ScreenH * 937 / 1000)
+
+// “宝可梦详情页开着”的页面标记：左侧 60%~84% 高度的绿色长按钮（POWER UP / EVOLVE / CHANGE FORM）。
+// 好友页同区域只有“64”等级数字（细字，过不了横/纵双重验证）和位置偏右的彩色小图标。
+DetX1 = Int(ScreenW * 2 / 100)
+DetY1 = Int(ScreenH * 60 / 100)
+DetX2 = Int(ScreenW * 50 / 100)
+DetY2 = Int(ScreenH * 84 / 100)
+DetLeftMaxX = Int(ScreenW * 25 / 100)
 
 TradeCount = 0
 FoundX = -1
 FoundY = -1
-LastCloseTapX = -1
-LastCloseTapY = -1
 
 // ===================== 基础工具 =====================
 // 旧截图坐标按基准分辨率 960x2079 换算；只用于交易入口和列表第一格这两个固定目标。
@@ -179,7 +185,7 @@ End Function
 // 找“长条按钮”：候选色点 + 位置约束 + 右侧横向延伸验证 + 下方纵向延伸验证。
 // FindColor（方向 0）只返回区域里最上面的第一个匹配点，所以任何一项验证失败都不能直接放弃：
 // 把搜索区域上沿挪到该候选点下方再找，孤立杂点/文字行/位置不对的色块挡不住更靠下的真按钮。
-// maxLeftX：按钮左缘必须出现在这个 x 以内（NEXT/CONFIRM/CANCEL 都是贴左或偏左的长条）。
+// maxLeftX：按钮左缘必须出现在这个 x 以内（这些按钮都是贴左或偏左的长条）。
 // 通过后 PillFoundX/Y 是按钮上沿色点，PillTapX/Y 是建议点击点（按钮内部）。
 Function FindPillIn(x1, y1, x2, y2, spec, maxLeftX)
     Dim curY1, guard, candX, candY, tapX, okH, okV
@@ -200,8 +206,9 @@ Function FindPillIn(x1, y1, x2, y2, spec, maxLeftX)
         okV = False
         tapX = -1
         If candX <= maxLeftX Then
-            // 横向验证：右侧 36~170px 仍是同色（按钮是横向长条；文字笔画过不了这关的概率高）
-            hx1 = candX + 36
+            // 横向验证：右侧 60~170px 仍是同色。按钮都是 300px+ 的长条；
+            // “64”等级数字、“+4”金色文本这类 ~55px 宽的内容过不了 60px 起跳的检查。
+            hx1 = candX + 60
             hx2 = candX + 170
             hy2 = candY + 14
             If hx2 > x2 Then
@@ -237,11 +244,12 @@ Function FindPillIn(x1, y1, x2, y2, spec, maxLeftX)
     Loop While guard < 40 And curY1 < y2
 End Function
 
-// 找完成页底部深青色 X 圆钮。三重验证：
-// 1) 下方 40~100px 仍有同色（圆环下半部 / X 笔画）；
-// 2)+3) “排长条”：X 是 ~110px 的小圆钮，它左右 130px 以外不应该再有同色。
-//        POWER UP / CHANGE FORM 这类 300px+ 的浅青绿长按钮、大面积特效背景会在这里被拒掉。
-// 候选点验证失败就从它下方继续找，杂点不挡真按钮。
+// 找完成页底部青色 X 圆钮。验证：
+// 1) 候选点“正下方窄列”25~85px 仍是同色——X 是 ~90px 的实心圆钮，有纵向厚度；
+//    GYMS & RAIDS 页签的细下划线（实测抢点元凶）正下方是白底，在这里被一票否决。
+//    窄列只看候选点正下方，不会像宽框那样擦到旁边别的控件。
+// 2) 左右 130px 以外不允许还有同色，排除 300px+ 的长按钮。
+// 候选点验证失败就从它下方继续找。
 Function FindCloseIn(x1, y1, x2, y2)
     Dim curY1, guard, topX, topY
     FindCloseIn = False
@@ -254,13 +262,13 @@ Function FindCloseIn(x1, y1, x2, y2)
         End If
         topX = FoundX
         topY = FoundY
-        If FindSpecIn(topX - 15, topY + 40, topX + 85, topY + 100, CloseSpec) Then
+        If FindSpecIn(topX - 5, topY + 25, topX + 30, topY + 85, CloseSpec) Then
             If FindSpecIn(topX + 130, topY, topX + 260, topY + 20, CloseSpec) = False Then
                 If FindSpecIn(topX - 260, topY, topX - 130, topY + 20, CloseSpec) = False Then
                     CloseFoundX = topX
                     CloseFoundY = topY
-                    CloseTapX = topX + 35
-                    CloseTapY = topY + 45
+                    CloseTapX = topX + 25
+                    CloseTapY = topY + 42
                     FindCloseIn = True
                     Exit Function
                 End If
@@ -270,26 +278,7 @@ Function FindCloseIn(x1, y1, x2, y2)
     Loop While guard < 40 And curY1 < y2
 End Function
 
-// “收到的宝可梦详情页”是否已出现：探测左侧 6%~24%、高度 61%~69% 处的白色卡片。
-// 交易页这里是蓝色背景（白色虚线太细，过不了下方 40~90px 的纵向验证），动画期间也没有白卡。
-// 只有这个探针通过，才允许去找/点底部的 X，保证绝不会在交易页阶段碰底部按钮（那里有表情转盘）。
-Function ReceivedPageVisible()
-    Dim wx1, wx2, wy1, wy2
-    ReceivedPageVisible = False
-    wx1 = Int(ScreenW * 6 / 100)
-    wx2 = Int(ScreenW * 24 / 100)
-    wy1 = Int(ScreenH * 61 / 100)
-    wy2 = Int(ScreenH * 69 / 100)
-    If FindSpecIn(wx1, wy1, wx2, wy2, WhiteCardSpec) = False Then
-        Exit Function
-    End If
-    If FindSpecIn(FoundX - 10, FoundY + 40, FoundX + 30, FoundY + 90, WhiteCardSpec) = False Then
-        Exit Function
-    End If
-    ReceivedPageVisible = True
-End Function
-
-// ===================== 状态判断 =====================
+// ===================== 页面状态判断 =====================
 Function NextPillVisible()
     NextPillVisible = FindPillIn(NextX1, NextY1, NextX2, NextY2, GreenBtnSpec, NextLeftMaxX)
 End Function
@@ -300,6 +289,13 @@ End Function
 
 Function OrangePillVisible()
     OrangePillVisible = FindPillIn(ConfX1, ConfY1, ConfX2, ConfY2, OrangeSpec, ConfLeftMaxX)
+End Function
+
+// 宝可梦详情页是否开着：左侧中下部有贴左的绿色长按钮（POWER UP / EVOLVE / CHANGE FORM）。
+// 这是交易完成收尾阶段的唯一“真相来源”：标记在 = 详情页没关；标记消失 = 已回到好友页。
+// 不再用“X 还在不在”判断——好友页底部也有同款 X，会永远误判。
+Function DetailPageOpen()
+    DetailPageOpen = FindPillIn(DetX1, DetY1, DetX2, DetY2, GreenBtnSpec, DetLeftMaxX)
 End Function
 
 // ===================== 页面动作 =====================
@@ -313,27 +309,31 @@ Sub TapFirstPokemon()
     SafeTap 210, 645, "FIRST POKEMON"
 End Sub
 
-// 上一轮的 X 如果还残留在屏幕上（详情页没关掉），先补点掉，避免本轮入口坐标误点到详情页的
-// POWER UP / EVOLVE。只检查上次点击点 ±120px 的小区域，不会碰到好友页里位置不同的其他 X。
+// 轮前兜底：上一轮的详情页若没关掉（标记还在），先补点 X 关闭，
+// 避免本轮入口坐标 (386,1555) 误点到详情页同位置的 POWER UP / EVOLVE。
+// 在好友页上标记为 False，这里什么都不会点。
 Sub PreEntryGuard()
-    If LastCloseTapY < 0 Then
-        Exit Sub
-    End If
-    If FindCloseIn(LastCloseTapX - 120, LastCloseTapY - 120, LastCloseTapX + 120, LastCloseTapY + 120) = False Then
-        Exit Sub
-    End If
-    TracePrint "警告：上一轮完成页的 X 仍在屏幕上，先补点关闭"
-    TapPoint LastCloseTapX, LastCloseTapY, "补点完成页 X"
-    Delay 3000
-    If FindCloseIn(LastCloseTapX - 120, LastCloseTapY - 120, LastCloseTapX + 120, LastCloseTapY + 120) Then
-        TracePrint "残留页面关不掉，为安全停止脚本：请手动回到好友页后重新运行"
-        ExitScript
-    End If
-    WaitSeconds WaitReturnSec, "补点 X 后回到好友页"
+    Dim tries
+    tries = 0
+    Do While DetailPageOpen()
+        tries = tries + 1
+        If tries > 4 Then
+            TracePrint "宝可梦详情页关不掉，为安全停止脚本：请手动关闭后重新运行"
+            ExitScript
+        End If
+        TracePrint "警告：检测到宝可梦详情页未关闭（第 " & tries & " 次），补点 X"
+        If FindCloseIn(CloseX1, CloseY1, CloseX2, CloseY2) Then
+            TapPoint CloseTapX, CloseTapY, "补点详情页 X"
+        Else
+            TapPoint CloseFallbackX, CloseFallbackY, "补点详情页 X（比例兜底）"
+        End If
+        Delay 2500
+    Loop
 End Sub
 
 // 选完宝可梦后：等绿色 NEXT 出现 -> 点 -> 验证页面切走；没切走就限时重点。
-// NEXT 长时间不出现时，每隔 SelectRetryIntervalSec 再点一次第一只宝可梦（兼容列表加载慢、第一次没点中）。
+// NEXT 长时间不出现时，每隔 SelectRetryIntervalSec 再点一次第一只宝可梦
+//（兼容列表加载慢、第一次没点中；在错误页面上点这个坐标是天空/空白区，无害）。
 Function SelectAndPressNext()
     Dim elapsed, sinceTap, vElapsed
     elapsed = 0
@@ -356,7 +356,7 @@ Function SelectAndPressNext()
             TracePrint "反复点 NEXT 页面仍未切换（" & NextRetryMaxSec & " 秒）"
             Exit Function
         End If
-        Delay 1500
+        Delay 1200
         elapsed = elapsed + 2
         sinceTap = sinceTap + 2
         If sinceTap >= SelectRetryIntervalSec Then
@@ -370,10 +370,9 @@ Function SelectAndPressNext()
 End Function
 
 // 交易确认页：等对方选好 -> 绿色 CONFIRM 出现就点 -> 直到左侧变橙色（CANCEL）才算确认成功。
-// 如果 CONFIRM 点了没反应会自动再点；对方没选好前按钮不是绿色，循环会一直安静等待。
-// 特殊情况：对方已经先确认（右侧已挂 CONFIRMED）时，我方一点 CONFIRM 交易立即开始，
-// 橙色 CANCEL 可能只闪现一两秒甚至直接进动画——所以点完先密集检查橙色；
-// 点过之后绿色和橙色都连续消失，同样视为确认成功、交易已开始。
+// 对方没选好前按钮不是绿色，循环会一直安静等待；点了没反应会自动再点。
+// 对方已先确认时，我方一点 CONFIRM 交易立即开始，橙色可能只闪现一两秒甚至直接进动画——
+// 点完先以 0.5 秒间隔密集检查橙色；点过之后绿/橙都连续消失，同样视为交易已开始。
 Function WaitAndPressConfirm()
     Dim elapsed, burst, tappedOnce, goneStreak
     elapsed = 0
@@ -437,37 +436,56 @@ Function WaitPartnerConfirmDone()
     TracePrint "对方迟迟未确认（" & WaitPartnerConfirmSec & " 秒），不自动取消，安全退出"
 End Function
 
-// 交易动画放完后会弹出“收到的宝可梦详情页”，底部中间有深青色 X。
-// 必须先通过白卡探针确认详情页真的出现了，才开始找/点 X——动画、交易页阶段绝不碰底部。
-// 点完在点击点附近复查：X 还在就再点（自我修复），消失才算关闭成功。
+// 交易动画放完后弹出“收到的宝可梦详情页”。全程以“详情页标记”（POWER UP 长按钮）为准：
+//   标记出现 -> 在底部带找 X 圆钮并点击 -> 标记连续两次消失 = 关闭成功。
+//   标记开着却 12 秒找不到 X 时，按实测比例坐标 (50.5%, 93.7%) 兜底点一次。
+// 不再用“X 是否还在”验证关闭——好友页底部也有同款 X，那样验证永远过不了（实测踩坑）。
 Function TapCloseWhenDone()
-    Dim elapsed
+    Dim elapsed, sawPage, goneCount, noXElapsed
     elapsed = 0
+    sawPage = False
+    goneCount = 0
+    noXElapsed = 0
     TapCloseWhenDone = False
     Do
-        If ReceivedPageVisible() = False Then
-            Delay 1500
-            elapsed = elapsed + 2
-            TracePrint "等待交易动画结束、收到宝可梦的详情页出现 " & elapsed & "/" & WaitCompleteMaxSec & " 秒"
-        ElseIf FindCloseIn(CloseX1, CloseY1, CloseX2, CloseY2) Then
-            TapPoint CloseTapX, CloseTapY, "完成页 X"
-            LastCloseTapX = CloseTapX
-            LastCloseTapY = CloseTapY
-            Delay 2500
-            If FindCloseIn(CloseTapX - 120, CloseTapY - 120, CloseTapX + 120, CloseTapY + 120) = False Then
-                TracePrint "X 已消失：收到的宝可梦详情页已关闭"
-                TapCloseWhenDone = True
-                Exit Function
+        If DetailPageOpen() Then
+            sawPage = True
+            goneCount = 0
+            If FindCloseIn(CloseX1, CloseY1, CloseX2, CloseY2) Then
+                noXElapsed = 0
+                TapPoint CloseTapX, CloseTapY, "完成页 X"
+                Delay 2000
+                elapsed = elapsed + 3
+            Else
+                noXElapsed = noXElapsed + 2
+                If noXElapsed >= 12 Then
+                    TapPoint CloseFallbackX, CloseFallbackY, "完成页 X（比例兜底）"
+                    noXElapsed = 0
+                    Delay 2000
+                    elapsed = elapsed + 3
+                Else
+                    Delay 1200
+                    elapsed = elapsed + 2
+                    TracePrint "详情页已出现，等待识别底部 X " & elapsed & "/" & WaitCompleteMaxSec & " 秒"
+                End If
             End If
-            TracePrint "X 还在（点击可能未生效），继续重试"
-            elapsed = elapsed + 5
         Else
-            Delay 1500
-            elapsed = elapsed + 2
-            TracePrint "详情页已出现，等待识别底部 X " & elapsed & "/" & WaitCompleteMaxSec & " 秒"
+            If sawPage Then
+                goneCount = goneCount + 1
+                If goneCount >= 2 Then
+                    TracePrint "详情页标记已消失：收到的宝可梦详情页已关闭"
+                    TapCloseWhenDone = True
+                    Exit Function
+                End If
+                Delay 700
+            Else
+                Delay 1200
+                elapsed = elapsed + 2
+                TracePrint "等待交易动画结束、收到宝可梦的详情页出现 " & elapsed & "/" & WaitCompleteMaxSec & " 秒"
+            End If
         End If
     Loop While elapsed < WaitCompleteMaxSec
-    TracePrint "等不到完成页 X（" & WaitCompleteMaxSec & " 秒）"
+    TracePrint "完成页处理超时（" & WaitCompleteMaxSec & " 秒）"
 End Function
 
 // ===================== 单轮流程 =====================
@@ -476,7 +494,7 @@ Sub OneTrade()
 
     PreEntryGuard()
     TapTradeEntry()
-    WaitSeconds WaitPokemonListSec, "pokemon list"
+    WaitSeconds ListSettleSec, "list settle"
     TapFirstPokemon()
 
     If SelectAndPressNext() = False Then
@@ -498,7 +516,7 @@ Sub OneTrade()
         ExitScript
     End If
 
-    WaitSeconds WaitReturnSec, "return to friend page"
+    WaitSeconds ReturnSettleSec, "return settle"
 
     TradeCount = TradeCount + 1
     TracePrint "===== Trade round " & TradeCount & " done ====="
