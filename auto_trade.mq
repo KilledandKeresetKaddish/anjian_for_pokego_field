@@ -1,44 +1,114 @@
-// Pokemon GO 自动交易脚本（按键精灵手机助手）
-// 设备基准：iPhone 13 Pro / iOS 16.3，竖屏。
-// 第一性原则：不要相信截图红框/绝对坐标；优先在预期区域找“按钮颜色”，找到可点击按钮后再点。
-// 按键精灵文档说明 GetPixelColor 返回 BGR 十六进制颜色，本脚本据此做区域扫描。
-// 使用方式：从好友资料页开始运行（能看到 LOCAL TRADE / REMOTE TRADE / VIEW TRADE POKÉMON 的页面）。
+// Pokemon GO 自动交易脚本（按键精灵手机助手 / iPhone 13 Pro, iOS 16.3, 竖屏）
+//
+// ===== 本次重写为什么能解决“选完第一只宝可梦后卡住、不点 NEXT” =====
+// 旧版用 GetPixelColor 写了一个逐像素双重循环来扫区域，每个采样点要调 3 次 GetPixelColor，
+// 扫一遍 NEXT 区域就是两万多次屏幕取色调用。在手机助手上每次取色都是一次较慢的屏幕查询，
+// 所以一遍扫描要几分钟到几十分钟，而且日志要扫完一遍才打印——表现就是“停在选完宝可梦的页面不动”。
+// （NEXT 是流程里第一个用颜色扫描的步骤，前面 LOCAL TRADE / 选宝可梦都是普通坐标点击，所以恰好卡在这里。）
+//
+// 现在改用按键精灵文档（help.anjian.com）的原生区域找色命令，一次调用毫秒级完成整个区域扫描：
+//     FindColor 左上X, 左上Y, 右下X, 右下Y, "BGR颜色-偏色", 方向, 相似度, intX, intY
+// 未找到时 intX / intY 返回 -1。颜色是 BGR 十六进制（注意不是 RGB）。
+//
+// ===== 防误点设计 =====
+// 1. 长条按钮（NEXT / CONFIRM / 橙色 CANCEL）要求“横向延伸 + 纵向延伸”双重验证：
+//    找到候选色点后，再验证它右侧 36~170px 和下方 45~90px 仍是同色。
+//    文字、细图标只有横向或零散匹配，过不了纵向验证，不会被当成按钮。
+//    候选点验证失败不放弃：从该点下方继续搜索区域余下部分，
+//    所以按钮上方出现同色杂点（贴图、特效、文字）也挡不住真按钮。
+// 2. CONFIRM/CANCEL 还要求色点在屏幕左侧 25% 内（按钮贴屏幕左边），
+//    这样交易页中间的金色“+XX 星尘/km”文字、右下宝可梦卡片都不会误判。
+// 3. 完成页 X 只在交易确认页消失（橙色 CANCEL 不见了 = 双方都确认、动画开始）之后才开始找，
+//    所以不会在交易页/好友页阶段乱点底部按钮。
+// 4. 每一步都是“等待状态出现 -> 点击 -> 验证状态切换”，限时内等不到就打日志安全退出，绝不盲点。
+//
+// ===== 使用方式 =====
+// 从好友资料页开始运行（能看到 SEND GIFT / LOCAL TRADE / REMOTE TRADE 的页面）。
+// 流程：LOCAL TRADE -> 等列表 -> 点第一只宝可梦 -> 绿色 NEXT 出现就点（验证页面切走）
+//      -> 等对方选好、左侧绿色 CONFIRM 出现就点 -> 验证变橙色 CANCEL（=确认成功）
+//      -> 橙色还在就耐心等对方确认 -> 橙色消失 = 交易动画开始
+//      -> 等收到的宝可梦详情页底部浅青色 X 出现，点掉并验证消失 -> 等回到好友页 -> 下一轮。
 
-Dim BaseW, BaseH
 Dim ScreenW, ScreenH
+Dim BaseW, BaseH
 Dim MaxTrades, TradeCount
-Dim WaitPartnerMaxSec, WaitCompleteMaxSec, StepDelayMs
-Dim WaitPokemonListSec, WaitPokemonDetailSec, WaitTradePageSec, WaitReturnSec
-Dim NextRetryMaxSec, NextRetryIntervalSec
-Dim ScanStep, LastFoundX, LastFoundY
+Dim StepDelayMs
+Dim WaitPokemonListSec, SelectRetryIntervalSec, WaitNextMaxSec, NextRetryMaxSec
+Dim WaitPartnerSelectSec, WaitPartnerConfirmSec, WaitCompleteMaxSec, WaitReturnSec
+Dim GreenBtnSpec, OrangeSpecA, OrangeSpecB, CloseSpecA, CloseSpecB
+Dim NextX1, NextY1, NextX2, NextY2, NextLeftMaxX
+Dim ConfX1, ConfY1, ConfX2, ConfY2, ConfLeftMaxX
+Dim CloseX1, CloseY1, CloseX2, CloseY2
+Dim FoundX, FoundY
+Dim PillFoundX, PillFoundY, PillTapX, PillTapY
+Dim CloseFoundX, CloseFoundY, CloseTapX, CloseTapY
+Dim LastCloseTapX, LastCloseTapY
 
 BaseW = 960
 BaseH = 2079
 ScreenW = GetScreenX()
 ScreenH = GetScreenY()
 
-MaxTrades = 20                 // 最多循环交易次数；改成 0 表示无限循环（不建议第一次使用）
-WaitPokemonListSec = 12         // 点击交易入口后等待宝可梦列表加载的秒数
-WaitPokemonDetailSec = 120      // 选择宝可梦后等待 NEXT 按钮出现的最长秒数，不再固定硬等
-WaitTradePageSec = 15           // 点击 NEXT 后等待交易确认页加载的秒数
-WaitPartnerMaxSec = 180         // 点 CONFIRM 后，等待交易完成页 X 出现的最长秒数；这是检测上限，不是固定睡眠
-WaitCompleteMaxSec = 60         // X 出现后点击失败/页面慢时的补充检测秒数；通常不会用满
-WaitReturnSec = 12              // 点交易完成详情页 X 后等待回到好友/交易入口页的秒数
-NextRetryMaxSec = 90            // NEXT 按钮出现但页面切换失败时，最长持续重试点击 NEXT 的秒数
-NextRetryIntervalSec = 5        // NEXT 没进入下一页时，每隔几秒再尝试一次
-StepDelayMs = 1500
-ScanStep = 8                    // 颜色扫描步长；越小越准但越慢
-TradeCount = 0
-LastFoundX = -1
-LastFoundY = -1
+// ===================== 可调参数 =====================
+MaxTrades = 20                // 最多交易轮数；0 = 无限循环（第一次使用不建议）
+WaitPokemonListSec = 12       // 点 LOCAL TRADE 后等宝可梦列表加载的秒数
+SelectRetryIntervalSec = 10   // 选完宝可梦后 NEXT 一直没出现时，每隔几秒再点一次第一只宝可梦（列表可能加载慢）
+WaitNextMaxSec = 120          // 等 NEXT 按钮出现的最长秒数（上限，按钮一出现就点）
+NextRetryMaxSec = 45          // 点了 NEXT 但页面没切走时，持续重点 NEXT 的最长秒数
+WaitPartnerSelectSec = 240    // 等对方选好宝可梦 + CONFIRM 可点 + 确认生效（变橙）的最长秒数
+WaitPartnerConfirmSec = 300   // 自己确认后（橙色 CANCEL 期间）等对方确认的最长秒数；期间只检测、不乱点
+WaitCompleteMaxSec = 120      // 双方确认后等交易动画放完、完成页 X 出现的最长秒数
+WaitReturnSec = 10            // 点掉 X 后等回到好友页的秒数
+StepDelayMs = 1500            // 坐标点击后的固定缓冲
 
-// ===== 兼容旧截图坐标：只用于低风险入口/列表点击；关键按钮不用它 =====
+// ===================== 颜色定义（BGR + 偏色） =====================
+// 绿色长条按钮（NEXT / CONFIRM）：PoGo 按钮是黄绿到青绿渐变。
+// 容差盒：R 60~170, G 168~242, B 40~200。排除白色文字、浅蓝天空、灰蓝 WAITING 角标、浅绿列表底色。
+GreenBtnSpec = "78CD73-502537"
+// 橙色 CANCEL / CONFIRMED 长条按钮。A 是 BGR 写法；B 是 R/B 互换的备用写法，兼容引擎按 RGB 解析的情况。
+OrangeSpecA = "3BA3F2-304040"
+OrangeSpecB = "F2A33B-404030"
+// 交易完成后“收到的宝可梦详情页”底部浅青色 X 圆钮。B 通道上限收紧到 208，避免把交易动画的浅蓝天空当成 X。
+CloseSpecA = "A0A04B-30303C"
+CloseSpecB = "4BA0A0-3C3030"
+
+// ===================== 检测区域（按屏幕百分比，分辨率无关） =====================
+// NEXT：底部中间长条（实测约在高度 82%~88%、宽度 20%~77%），带上下各留 ~2.5% 余量。
+NextX1 = Int(ScreenW * 12 / 100)
+NextY1 = Int(ScreenH * 80 / 100)
+NextX2 = Int(ScreenW * 80 / 100)
+NextY2 = Int(ScreenH * 91 / 100)
+NextLeftMaxX = Int(ScreenW * 35 / 100)      // NEXT 按钮左缘约在 20%，色点必须出现在左 35% 内才算 NEXT
+
+// CONFIRM / 橙色 CANCEL：贴屏幕左侧的中部长条（约高度 48%~55%）。
+// y 上限取 59%：再往下是左下角自己的宝可梦模型，避免把绿色宝可梦当按钮。
+ConfX1 = Int(ScreenW * 1 / 100)
+ConfY1 = Int(ScreenH * 38 / 100)
+ConfX2 = Int(ScreenW * 44 / 100)
+ConfY2 = Int(ScreenH * 59 / 100)
+ConfLeftMaxX = Int(ScreenW * 25 / 100)      // 按钮贴左边，色点必须在左 25% 内
+
+// 交易完成详情页底部中间的 X（不同页面 X 高度略有差异，区域放宽到 80%~97%）。
+// x 限制在 36%~64%，避开右下角的菜单(≡)按钮。
+CloseX1 = Int(ScreenW * 36 / 100)
+CloseY1 = Int(ScreenH * 80 / 100)
+CloseX2 = Int(ScreenW * 64 / 100)
+CloseY2 = Int(ScreenH * 97 / 100)
+
+TradeCount = 0
+FoundX = -1
+FoundY = -1
+LastCloseTapX = -1
+LastCloseTapY = -1
+
+// ===================== 基础工具 =====================
+// 旧截图坐标按基准分辨率 960x2079 换算；只用于交易入口和列表第一格这两个固定目标。
 Function SX(x)
-    SX = x * ScreenW / BaseW
+    SX = Int(x * ScreenW / BaseW)
 End Function
 
 Function SY(y)
-    SY = y * ScreenH / BaseH
+    SY = Int(y * ScreenH / BaseH)
 End Function
 
 Sub SafeTap(x, y, note)
@@ -48,192 +118,10 @@ Sub SafeTap(x, y, note)
 End Sub
 
 Sub TapPoint(x, y, note)
-    TracePrint "Tap " & note & " @ " & x & "," & y
-    Tap x, y
-    Delay StepDelayMs
+    TracePrint "Tap " & note & " @ " & Int(x) & "," & Int(y)
+    Tap Int(x), Int(y)
+    Delay 800
 End Sub
-
-Function HexDigitValue(ch)
-    ch = UCase(ch)
-    If ch = "0" Then
-        HexDigitValue = 0
-    ElseIf ch = "1" Then
-        HexDigitValue = 1
-    ElseIf ch = "2" Then
-        HexDigitValue = 2
-    ElseIf ch = "3" Then
-        HexDigitValue = 3
-    ElseIf ch = "4" Then
-        HexDigitValue = 4
-    ElseIf ch = "5" Then
-        HexDigitValue = 5
-    ElseIf ch = "6" Then
-        HexDigitValue = 6
-    ElseIf ch = "7" Then
-        HexDigitValue = 7
-    ElseIf ch = "8" Then
-        HexDigitValue = 8
-    ElseIf ch = "9" Then
-        HexDigitValue = 9
-    ElseIf ch = "A" Then
-        HexDigitValue = 10
-    ElseIf ch = "B" Then
-        HexDigitValue = 11
-    ElseIf ch = "C" Then
-        HexDigitValue = 12
-    ElseIf ch = "D" Then
-        HexDigitValue = 13
-    ElseIf ch = "E" Then
-        HexDigitValue = 14
-    ElseIf ch = "F" Then
-        HexDigitValue = 15
-    Else
-        HexDigitValue = 0
-    End If
-End Function
-
-Function HexPairToInt(pairText)
-    HexPairToInt = HexDigitValue(Mid(pairText, 1, 1)) * 16 + HexDigitValue(Mid(pairText, 2, 1))
-End Function
-
-Function PixelR(x, y)
-    Dim c
-    c = GetPixelColor(x, y, 0) // BGR: BBGGRR
-    PixelR = HexPairToInt(Mid(c, 5, 2))
-End Function
-
-Function PixelG(x, y)
-    Dim c
-    c = GetPixelColor(x, y, 0) // BGR: BBGGRR
-    PixelG = HexPairToInt(Mid(c, 3, 2))
-End Function
-
-Function PixelB(x, y)
-    Dim c
-    c = GetPixelColor(x, y, 0) // BGR: BBGGRR
-    PixelB = HexPairToInt(Mid(c, 1, 2))
-End Function
-
-Function IsGoGreen(x, y)
-    Dim r, g, b
-    r = PixelR(x, y)
-    g = PixelG(x, y)
-    b = PixelB(x, y)
-    // Pokemon GO 的 NEXT/CONFIRM/交易按钮是黄绿到青绿渐变；绿色分量明显高，且整体较亮。
-    IsGoGreen = (g >= 150 And r >= 35 And r <= 190 And b >= 70 And b <= 210 And g > r + 25 And g >= b - 20)
-End Function
-
-Function IsGoOrange(x, y)
-    Dim r, g, b
-    r = PixelR(x, y)
-    g = PixelG(x, y)
-    b = PixelB(x, y)
-    // 对方已确认时会出现橙色 CONFIRMED；只用于判断已经在交易页，不点击它。
-    IsGoOrange = (r >= 200 And g >= 120 And g <= 210 And b <= 120)
-End Function
-
-Function IsCloseCircle(x, y)
-    Dim r, g, b
-    r = PixelR(x, y)
-    g = PixelG(x, y)
-    b = PixelB(x, y)
-    // 交易完成详情页底部 X 是浅青/蓝绿色圆形，不再用截图固定坐标直接点。
-    IsCloseCircle = (g >= 145 And b >= 145 And r >= 90 And r <= 210 And Abs(g - b) <= 70)
-End Function
-
-Function FindColorInRegion(x1, y1, x2, y2, colorKind)
-    Dim x, y
-    LastFoundX = -1
-    LastFoundY = -1
-
-    For y = y1 To y2 Step ScanStep
-        For x = x1 To x2 Step ScanStep
-            If colorKind = "green" Then
-                // NEXT/CONFIRM 都是横向长按钮。要求同一水平线上连续出现绿色，避免把宝可梦身体/招式图标当按钮。
-                If x + ScanStep * 8 <= x2 Then
-                    If IsGoGreen(x, y) And IsGoGreen(x + ScanStep * 4, y) And IsGoGreen(x + ScanStep * 8, y) Then
-                        LastFoundX = x + ScanStep * 4
-                        LastFoundY = y
-                        FindColorInRegion = True
-                        Exit Function
-                    End If
-                End If
-            ElseIf colorKind = "orange" Then
-                If IsGoOrange(x, y) Then
-                    LastFoundX = x
-                    LastFoundY = y
-                    FindColorInRegion = True
-                    Exit Function
-                End If
-            ElseIf colorKind = "close" Then
-                If IsCloseCircle(x, y) Then
-                    LastFoundX = x
-                    LastFoundY = y
-                    FindColorInRegion = True
-                    Exit Function
-                End If
-            End If
-        Next
-    Next
-
-    FindColorInRegion = False
-End Function
-
-Function WaitAndTapColorButton(x1, y1, x2, y2, colorKind, maxSec, note)
-    Dim elapsed, tapX, tapY
-    x1 = Int(x1)
-    y1 = Int(y1)
-    x2 = Int(x2)
-    y2 = Int(y2)
-    elapsed = 0
-
-    Do
-        If FindColorInRegion(x1, y1, x2, y2, colorKind) Then
-            tapX = LastFoundX + ScanStep * 2
-            tapY = LastFoundY + ScanStep * 2
-            If tapX > x2 Then
-                tapX = LastFoundX
-            End If
-            If tapY > y2 Then
-                tapY = LastFoundY
-            End If
-            TracePrint "Found " & note & " color=" & colorKind & " @ " & LastFoundX & "," & LastFoundY & "; tap=" & tapX & "," & tapY
-            TapPoint tapX, tapY, note
-            WaitAndTapColorButton = True
-            Exit Function
-        End If
-
-        TracePrint "Wait " & note & " color=" & colorKind & " " & elapsed & "/" & maxSec & " sec"
-        Delay 1000
-        elapsed = elapsed + 1
-    Loop While elapsed < maxSec
-
-    TracePrint "Timeout waiting " & note & " color=" & colorKind
-    WaitAndTapColorButton = False
-End Function
-
-Function WaitForColor(x1, y1, x2, y2, colorKind, maxSec, note)
-    Dim elapsed
-    x1 = Int(x1)
-    y1 = Int(y1)
-    x2 = Int(x2)
-    y2 = Int(y2)
-    elapsed = 0
-
-    Do
-        If FindColorInRegion(x1, y1, x2, y2, colorKind) Then
-            TracePrint "Detected " & note & " color=" & colorKind & " @ " & LastFoundX & "," & LastFoundY
-            WaitForColor = True
-            Exit Function
-        End If
-
-        TracePrint "Wait detect " & note & " " & elapsed & "/" & maxSec & " sec"
-        Delay 1000
-        elapsed = elapsed + 1
-    Loop While elapsed < maxSec
-
-    WaitForColor = False
-End Function
 
 Function WaitSeconds(sec, reason)
     Dim i
@@ -244,118 +132,344 @@ Function WaitSeconds(sec, reason)
     WaitSeconds = True
 End Function
 
+// 在区域内找一种颜色（原生 FindColor，毫秒级）。找到返回 True 并写入 FoundX/FoundY。
+Function FindSpecIn(x1, y1, x2, y2, spec)
+    Dim fx, fy, cx1, cy1, cx2, cy2
+    FindSpecIn = False
+    cx1 = Int(x1)
+    cy1 = Int(y1)
+    cx2 = Int(x2)
+    cy2 = Int(y2)
+    If cx1 < 0 Then
+        cx1 = 0
+    End If
+    If cy1 < 0 Then
+        cy1 = 0
+    End If
+    If cx2 > ScreenW - 1 Then
+        cx2 = ScreenW - 1
+    End If
+    If cy2 > ScreenH - 1 Then
+        cy2 = ScreenH - 1
+    End If
+    If cx1 >= cx2 Or cy1 >= cy2 Then
+        Exit Function
+    End If
+    fx = -1
+    fy = -1
+    FindColor cx1, cy1, cx2, cy2, spec, 0, 0.9, fx, fy
+    If fx > -1 And fy > -1 Then
+        FoundX = fx
+        FoundY = fy
+        FindSpecIn = True
+    End If
+End Function
+
+// 找“长条按钮”：候选色点 + 右侧横向延伸验证 + 下方纵向延伸验证。
+// FindColor（方向 0）只返回区域里最上面的第一个匹配点，所以候选点验证失败时不能直接放弃：
+// 把搜索区域上沿挪到该候选点下方再找，孤立杂点/文字行就挡不住更靠下的真按钮。
+// 通过后 PillFoundX/Y 是按钮上沿色点，PillTapX/Y 是建议点击点（按钮内部）。
+Function FindPillIn(x1, y1, x2, y2, spec)
+    Dim curY1, guard, candX, candY, tapX, okH, okV
+    Dim hx1, hx2, hy2, vx1, vx2, vy1, vy2
+    FindPillIn = False
+    PillFoundX = -1
+    PillFoundY = -1
+    curY1 = y1
+    guard = 0
+    Do
+        guard = guard + 1
+        If FindSpecIn(x1, curY1, x2, y2, spec) = False Then
+            Exit Function
+        End If
+        candX = FoundX
+        candY = FoundY
+        okH = False
+        okV = False
+        tapX = -1
+        // 横向验证：右侧 36~170px 仍是同色（按钮是横向长条；文字笔画过不了这关的概率高）
+        hx1 = candX + 36
+        hx2 = candX + 170
+        hy2 = candY + 14
+        If hx2 > x2 Then
+            hx2 = x2
+        End If
+        If hx1 < hx2 Then
+            If FindSpecIn(hx1, candY, hx2, hy2, spec) Then
+                okH = True
+                tapX = FoundX
+            End If
+        End If
+        // 纵向验证：下方 45~90px 仍是同色（按钮有 ~120px 高；文字行没有这个纵向厚度）
+        If okH Then
+            vx1 = candX - 10
+            vx2 = candX + 80
+            vy1 = candY + 45
+            vy2 = candY + 90
+            If FindSpecIn(vx1, vy1, vx2, vy2, spec) Then
+                okV = True
+            End If
+        End If
+        If okH And okV Then
+            PillFoundX = candX
+            PillFoundY = candY
+            PillTapX = tapX
+            PillTapY = candY + 30
+            FindPillIn = True
+            Exit Function
+        End If
+        // 候选点不是按钮：跳过它所在的行，从下方继续找
+        curY1 = candY + 12
+    Loop While guard < 40 And curY1 < y2
+End Function
+
+// 找完成页底部浅青色 X 圆钮：候选色点 + 下方 40~100px 仍有同色（圆环下半部/X 笔画）。
+// 与 FindPillIn 同理：候选点验证失败就从它下方继续找，杂点不挡真按钮。
+Function FindCloseIn(x1, y1, x2, y2)
+    Dim curY1, guard, topX, topY, ok
+    FindCloseIn = False
+    curY1 = y1
+    guard = 0
+    Do
+        guard = guard + 1
+        ok = False
+        If FindSpecIn(x1, curY1, x2, y2, CloseSpecA) Then
+            ok = True
+        ElseIf FindSpecIn(x1, curY1, x2, y2, CloseSpecB) Then
+            ok = True
+        End If
+        If ok = False Then
+            Exit Function
+        End If
+        topX = FoundX
+        topY = FoundY
+        ok = False
+        If FindSpecIn(topX - 15, topY + 40, topX + 85, topY + 100, CloseSpecA) Then
+            ok = True
+        ElseIf FindSpecIn(topX - 15, topY + 40, topX + 85, topY + 100, CloseSpecB) Then
+            ok = True
+        End If
+        If ok Then
+            CloseFoundX = topX
+            CloseFoundY = topY
+            CloseTapX = topX + 35
+            CloseTapY = topY + 45
+            FindCloseIn = True
+            Exit Function
+        End If
+        curY1 = topY + 12
+    Loop While guard < 40 And curY1 < y2
+End Function
+
+// ===================== 状态判断 =====================
+Function NextPillVisible()
+    NextPillVisible = False
+    If FindPillIn(NextX1, NextY1, NextX2, NextY2, GreenBtnSpec) Then
+        If PillFoundX <= NextLeftMaxX Then
+            NextPillVisible = True
+        End If
+    End If
+End Function
+
+Function GreenConfirmVisible()
+    GreenConfirmVisible = False
+    If FindPillIn(ConfX1, ConfY1, ConfX2, ConfY2, GreenBtnSpec) Then
+        If PillFoundX <= ConfLeftMaxX Then
+            GreenConfirmVisible = True
+        End If
+    End If
+End Function
+
+Function OrangePillVisible()
+    OrangePillVisible = False
+    If FindPillIn(ConfX1, ConfY1, ConfX2, ConfY2, OrangeSpecA) Then
+        If PillFoundX <= ConfLeftMaxX Then
+            OrangePillVisible = True
+            Exit Function
+        End If
+    End If
+    If FindPillIn(ConfX1, ConfY1, ConfX2, ConfY2, OrangeSpecB) Then
+        If PillFoundX <= ConfLeftMaxX Then
+            OrangePillVisible = True
+        End If
+    End If
+End Function
+
+// ===================== 页面动作 =====================
 Sub TapTradeEntry()
-    // 交易入口在好友页底部；这里仍保留坐标，因为该页没有稳定的大面积独特色块。
+    // 好友页底部交易入口；固定目标，保留坐标点击（实测可用）。
     SafeTap 386, 1555, "LOCAL TRADE"
 End Sub
 
 Sub TapFirstPokemon()
-    // 宝可梦列表第一格；选择对象本来就是“第一个宝可梦”，这里可接受坐标点击。
+    // 宝可梦列表左上第一格；固定目标，保留坐标点击（实测可用）。
     SafeTap 210, 645, "FIRST POKEMON"
 End Sub
 
-Function TapNextWhenVisible(maxSec)
-    // NEXT 是底部中间绿色长按钮。扫描范围覆盖按钮可能出现的中下部，
-    // 但绿色匹配要求横向连续色块，所以不会因为单个绿色宝可梦像素就误点。
-    TapNextWhenVisible = WaitAndTapColorButton(ScreenW * 8 / 100, ScreenH * 55 / 100, ScreenW * 92 / 100, ScreenH * 88 / 100, "green", maxSec, "NEXT")
-End Function
-
-Function TapConfirmWhenVisible()
-    // CONFIRM 在交易页左侧中下区域。只点扫描到的绿色按钮像素，避免点到左下我方宝可梦。
-    TapConfirmWhenVisible = WaitAndTapColorButton(0, ScreenH * 38 / 100, ScreenW * 45 / 100, ScreenH * 62 / 100, "green", WaitTradePageSec, "CONFIRM")
-End Function
-
-Function TapCloseWhenVisible(maxSec)
-    // 交易完成详情页底部 X：只在底部中间区域找浅青圆形，不再盲点固定坐标。
-    // maxSec 是检测上限；一旦 X 出现会立刻点击，不会固定等满。
-    TapCloseWhenVisible = WaitAndTapColorButton(ScreenW * 35 / 100, ScreenH * 78 / 100, ScreenW * 65 / 100, ScreenH * 96 / 100, "close", maxSec, "DETAIL CLOSE X")
-End Function
-
-Function IsTradePageVisible()
-    // 交易确认页有两类稳定状态：左侧绿色 CONFIRM，或对方已确认后的右侧橙色 CONFIRMED。
-    If WaitForColor(0, ScreenH * 35 / 100, ScreenW, ScreenH * 65 / 100, "orange", 1, "trade page confirmed marker") Then
-        IsTradePageVisible = True
-        Exit Function
+// 上一轮的 X 如果还残留在屏幕上（详情页没关掉），先补点掉，避免本轮入口坐标误点到详情页的
+// POWER UP / EVOLVE。只检查上次点击点 ±120px 的小区域，不会碰到好友页里位置不同的其他 X。
+Sub PreEntryGuard()
+    If LastCloseTapY < 0 Then
+        Exit Sub
     End If
-    If WaitForColor(0, ScreenH * 38 / 100, ScreenW * 45 / 100, ScreenH * 62 / 100, "green", 1, "trade page confirm button") Then
-        IsTradePageVisible = True
-        Exit Function
+    If FindCloseIn(LastCloseTapX - 120, LastCloseTapY - 120, LastCloseTapX + 120, LastCloseTapY + 120) = False Then
+        Exit Sub
     End If
-    IsTradePageVisible = False
-End Function
+    TracePrint "警告：上一轮完成页的 X 仍在屏幕上，先补点关闭"
+    TapPoint LastCloseTapX, LastCloseTapY, "补点完成页 X"
+    Delay 3000
+    If FindCloseIn(LastCloseTapX - 120, LastCloseTapY - 120, LastCloseTapX + 120, LastCloseTapY + 120) Then
+        TracePrint "残留页面关不掉，为安全停止脚本：请手动回到好友页后重新运行"
+        ExitScript
+    End If
+    WaitSeconds WaitReturnSec, "补点 X 后回到好友页"
+End Sub
 
-Function TapNextWithRetry()
-    Dim waitNextElapsed, retryElapsed
-    waitNextElapsed = 0
-    retryElapsed = 0
-
-    // 第一阶段：不再硬等 pokemon detail。选完宝可梦后马上开始扫描 NEXT，看到就立刻点。
+// 选完宝可梦后：等绿色 NEXT 出现 -> 点 -> 验证页面切走；没切走就限时重点。
+// NEXT 长时间不出现时，每隔 SelectRetryIntervalSec 再点一次第一只宝可梦（兼容列表加载慢、第一次没点中）。
+Function SelectAndPressNext()
+    Dim elapsed, sinceTap, vElapsed
+    elapsed = 0
+    sinceTap = 0
+    SelectAndPressNext = False
     Do
-        If TapNextWhenVisible(NextRetryIntervalSec) Then
-            Exit Do
-        End If
-        waitNextElapsed = waitNextElapsed + NextRetryIntervalSec
-        TracePrint "Wait NEXT visible elapsed=" & waitNextElapsed & "/" & WaitPokemonDetailSec
-    Loop While waitNextElapsed < WaitPokemonDetailSec
-
-    If waitNextElapsed >= WaitPokemonDetailSec Then
-        TapNextWithRetry = False
-        Exit Function
-    End If
-
-    // 第二阶段：已经点过 NEXT，等待/验证是否进入交易页；没进就继续找 NEXT 并重点。
-    Do
-        If IsTradePageVisible() Then
-            TapNextWithRetry = True
+        If NextPillVisible() Then
+            TapPoint PillTapX, PillTapY, "NEXT"
+            vElapsed = 0
+            Do
+                Delay 1800
+                vElapsed = vElapsed + 2
+                If NextPillVisible() = False Then
+                    TracePrint "NEXT 已点掉，页面已切换到交易确认页"
+                    SelectAndPressNext = True
+                    Exit Function
+                End If
+                TapPoint PillTapX, PillTapY, "NEXT 重试"
+            Loop While vElapsed < NextRetryMaxSec
+            TracePrint "反复点 NEXT 页面仍未切换（" & NextRetryMaxSec & " 秒）"
             Exit Function
         End If
-
-        If TapNextWhenVisible(NextRetryIntervalSec) Then
-            retryElapsed = retryElapsed + NextRetryIntervalSec
-        Else
-            retryElapsed = retryElapsed + NextRetryIntervalSec
+        Delay 1500
+        elapsed = elapsed + 2
+        sinceTap = sinceTap + 2
+        If sinceTap >= SelectRetryIntervalSec Then
+            TracePrint "NEXT 还没出现（" & elapsed & "/" & WaitNextMaxSec & " 秒），再点一次第一只宝可梦"
+            TapFirstPokemon()
+            sinceTap = 0
+            elapsed = elapsed + 2
         End If
-
-        TracePrint "Retry NEXT after visible elapsed=" & retryElapsed & "/" & NextRetryMaxSec
-    Loop While retryElapsed < NextRetryMaxSec
-
-    TapNextWithRetry = False
+    Loop While elapsed < WaitNextMaxSec
+    TracePrint "等不到 NEXT 按钮（" & WaitNextMaxSec & " 秒）"
 End Function
 
+// 交易确认页：等对方选好 -> 绿色 CONFIRM 出现就点 -> 直到左侧变橙色（CANCEL）才算确认成功。
+// 如果 CONFIRM 点了没反应会自动再点；对方没选好前按钮不是绿色，循环会一直安静等待。
+Function WaitAndPressConfirm()
+    Dim elapsed
+    elapsed = 0
+    WaitAndPressConfirm = False
+    Do
+        If OrangePillVisible() Then
+            TracePrint "左侧已变橙色 CANCEL：我方确认已生效"
+            WaitAndPressConfirm = True
+            Exit Function
+        End If
+        If GreenConfirmVisible() Then
+            TapPoint PillTapX, PillTapY, "CONFIRM"
+            Delay 1200
+            elapsed = elapsed + 2
+        End If
+        Delay 1500
+        elapsed = elapsed + 2
+        TracePrint "等待对方选择/确认按钮生效 " & elapsed & "/" & WaitPartnerSelectSec & " 秒"
+    Loop While elapsed < WaitPartnerSelectSec
+End Function
+
+// 我方已确认（橙色 CANCEL 在）：耐心等对方确认。橙色消失 = 双方确认完毕、交易动画开始。
+// 为防动画闪烁误判，橙色要连续两次都检测不到才算消失。
+Function WaitPartnerConfirmDone()
+    Dim elapsed
+    elapsed = 0
+    WaitPartnerConfirmDone = False
+    Do
+        If OrangePillVisible() = False Then
+            Delay 1000
+            If OrangePillVisible() = False Then
+                TracePrint "橙色 CANCEL 消失：双方已确认，交易动画开始"
+                WaitPartnerConfirmDone = True
+                Exit Function
+            End If
+        End If
+        Delay 2000
+        elapsed = elapsed + 3
+        TracePrint "等待对方确认（橙色 CANCEL 仍在）" & elapsed & "/" & WaitPartnerConfirmSec & " 秒"
+    Loop While elapsed < WaitPartnerConfirmSec
+    TracePrint "对方迟迟未确认（" & WaitPartnerConfirmSec & " 秒），不自动取消，安全退出"
+End Function
+
+// 交易动画放完后会弹出“收到的宝可梦详情页”，底部中间有浅青色 X。
+// 出现就点，点完在点击点附近复查：X 还在就再点（自我修复），消失才算关闭成功。
+Function TapCloseWhenDone()
+    Dim elapsed
+    elapsed = 0
+    TapCloseWhenDone = False
+    Do
+        If FindCloseIn(CloseX1, CloseY1, CloseX2, CloseY2) Then
+            TapPoint CloseTapX, CloseTapY, "完成页 X"
+            LastCloseTapX = CloseTapX
+            LastCloseTapY = CloseTapY
+            Delay 2500
+            If FindCloseIn(CloseTapX - 120, CloseTapY - 120, CloseTapX + 120, CloseTapY + 120) = False Then
+                TracePrint "X 已消失：收到的宝可梦详情页已关闭"
+                TapCloseWhenDone = True
+                Exit Function
+            End If
+            TracePrint "X 还在（可能还在动画中/点击未生效），继续检测"
+            elapsed = elapsed + 5
+        Else
+            Delay 1500
+            elapsed = elapsed + 2
+            TracePrint "等待交易动画结束、完成页 X 出现 " & elapsed & "/" & WaitCompleteMaxSec & " 秒"
+        End If
+    Loop While elapsed < WaitCompleteMaxSec
+    TracePrint "等不到完成页 X（" & WaitCompleteMaxSec & " 秒）"
+End Function
+
+// ===================== 单轮流程 =====================
 Sub OneTrade()
     TracePrint "===== Trade round " & (TradeCount + 1) & " start ====="
 
+    PreEntryGuard()
     TapTradeEntry()
     WaitSeconds WaitPokemonListSec, "pokemon list"
-
     TapFirstPokemon()
 
-    If TapNextWithRetry() = False Then
-        TracePrint "NEXT failed: stop this round to avoid tapping the wrong screen."
+    If SelectAndPressNext() = False Then
+        TracePrint "NEXT 步骤失败：停止脚本，避免在未知页面乱点"
         ExitScript
     End If
 
-    If TapConfirmWhenVisible() = False Then
-        TracePrint "CONFIRM not visible: stop to avoid tapping selected Pokemon/card."
+    If WaitAndPressConfirm() = False Then
+        TracePrint "CONFIRM 步骤失败（始终没变橙色）：停止脚本，避免乱点"
         ExitScript
     End If
 
-    // 对方未确认时同一区域会变 CANCEL，所以确认只点一次；之后进入“检测完成页 X”的状态。
-    // 这里绝不能固定睡 WaitPartnerMaxSec：对方很快确认时，完成页 X 出现就必须马上点，避免交易页空等到失效。
-    If TapCloseWhenVisible(WaitPartnerMaxSec) = False Then
-        TracePrint "Completion X not visible within partner/completion detection window; try short extra detection."
-        If TapCloseWhenVisible(WaitCompleteMaxSec) = False Then
-            TracePrint "Detail close X not visible after extra completion detection; stop to avoid wrong-state loop."
-            ExitScript
-        End If
+    If WaitPartnerConfirmDone() = False Then
+        ExitScript
     End If
 
-    WaitSeconds WaitReturnSec, "return to friend/trade page"
+    If TapCloseWhenDone() = False Then
+        TracePrint "完成页 X 步骤失败：停止脚本，请手动收尾本轮交易"
+        ExitScript
+    End If
+
+    WaitSeconds WaitReturnSec, "return to friend page"
 
     TradeCount = TradeCount + 1
     TracePrint "===== Trade round " & TradeCount & " done ====="
 End Sub
 
+// ===================== 主循环 =====================
 TracePrint "Auto trade start. Screen=" & ScreenW & "x" & ScreenH & ", Base=" & BaseW & "x" & BaseH
 
 Do
